@@ -388,6 +388,7 @@ Output: one folder with TRT engines + ROS2 node + config
 - `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/models/smolvla.py`
 - `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/modal_real_export.py`
 - `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/modal_expert_export.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/modal_full_pipeline.py`
 
 ## Issues
 - `re-add`
@@ -520,23 +521,24 @@ Output: one folder with TRT engines + ROS2 node + config
 - `for-loop`
 - `sim-trained`
 - `bit-exact`
+- `odd-indexed`
 
 ## Tool Usage
 
 | Tool | Count |
 |------|-------|
 | Agent | 96 |
-| Bash | 182 |
-| Edit | 37 |
+| Bash | 193 |
+| Edit | 43 |
 | ExitPlanMode | 2 |
 | Glob | 2 |
-| Read | 54 |
+| Read | 61 |
 | ToolSearch | 4 |
 | WebFetch | 19 |
-| Write | 152 |
+| Write | 153 |
 
 ## Tokens
 
 - **Input:** 0
 - **Output:** 0
-- **Total:** ~3600991 (estimated)
+- **Total:** ~3662295 (estimated)
