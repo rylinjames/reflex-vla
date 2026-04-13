@@ -1,0 +1,537 @@
+---
+session_id: ced2c4f1-a341-45bf-ae1b-ba9f6ab0931c
+date: 2026-04-10
+summary: "picked one
+
+**T1-2 — Strategic capital landscape.**
+
+Reason: every other agent's output is acad..."
+tags:
+  - olympus
+  - session
+  - 2026-04
+---
+
+# picked one
+
+**T1-2 — Strategic capital landscape.**
+
+Reason: every other agent's output is acad...
+
+**Session:** ced2c4f1-a341-45bf-ae1b-ba9f6ab0931c
+**Date:** 2026-04-10
+
+## Decisions
+- picked one
+
+**T1-2 — Strategic capital landscape.**
+
+Reason: every other agent's output is academic if Path 00 cannot raise. The capital question is the load-bearing assumption under the entire...
+- The plan is already the most-researched version of Path 00 that can exist without customer contact. The next marginal hour is more valuable spent emailing Zhihao Jia than spawning a 19th agent.
+
+But...
+- decision: stay on Path 00 (safer, $1-3B exit) or pivot to **Path Alt-VLA** (riskier, $1T ceiling).
+
+**What Path Alt-VLA is:** You stop being an inference research lab and become a VLA foundation...
+- picked up the block"?)
+  - Rollouts take a long time (physical robots can only run so fast)
+  - Simulation-to-reality gap is a problem
+
+## Key datasets
+
+**Open X-Embodiment (X-Embodiment,...
+- selected** — you're on "hikaflow / main" but may need a different workspace. Click the "hikaflow" dropdown top-left and check if you have another workspace.
+2. **Workspace was deleted or expired**...
+- choosing a path:**
+
+**1. A decision matrix doc** — `business/path_selection/DECISION_MATRIX.md`
+One table scoring every path and stack on 10 weighted criteria: time to first dollar, ceiling,...
+- picked 8 markets based on the existing paths. But those paths were generated in one brainstorming session. The market list itself needs to be researched, not assumed. There might be a market nobody...
+- picked
+- Flow matching vs discrete diffusion vs autoregressive — which action head paradigm is winning adoption, which will dominate in 12 months
+- TensorRT plugin API deep dive — read NVIDIA's...
+
+## Knowledge
+- till listed as "highest ceiling, broadest TAM." It's neither in 2026. You can't build a billion-dollar company by being early to a market where the customers don't have revenue. Datadog didn't sell...
+- till ambiguous after the critique, a structured interview forces clarity on mission, persona, value prop. |
+| **trace** | Trace design decisions through history | Check whether prior sessions already...
+- till produce useful output. If I'm wrong, the whole analysis is wrong.
+
+## What I need from you before I spawn
+
+Three things, 30 seconds each:
+
+1. **Do you agree with the trillion-dollar reframe?**...
+- till have a $30B Datadog-for-inference outcome. **Tesla playbook: Roadster → Model S → Robotaxi.**
+
+I think the barbell is half-right but still too product-centric. The correction from the...
+- till 2 years away? | Timing precision |
+| T3-5 | **Adversarial agent: assume the founder is wrong about being top-1% technical** | What if the founder is actually 80th percentile, not 99th? What...
+- till the best available path for a research-first technical founder.** It's not trillion-dollar with high confidence — it's MosaicML-with-a-trillion-dollar-tail. That's a real, investable, legible...
+- insight: Path 00 is structurally downstream of model labs.** You're forever reacting to the next frontier lab's release. The honest framing: **Path 00 is the fundraising + co-founder-recruiting...
+- til after Block 1 results come in.
+- **More model-lab-alternative analysis** — R2-4 already gave the answer (Path Alt-VLA is the real trillion-dollar play; Path 00 is the ramp). We have the thesis....
+- til month 15 (hard gate)**
+- **No ARR on any internal dashboard for 18 months (the anti-SaaS policy)**
+- **Highest-leverage first-90-day move: pre-brief Nathan Lambert, get quote-tweet on P_max drop...
+- till unresearched. I'll group into thematic rounds and flag where diminishing returns kick in.
+
+## What's actually still missing
+
+After Round 3, you have strategy + 12 dimensions of specification....
+- til month 15. You publish papers, people use your open-source runtime, some of them pay.
+
+- **GTM** = Go-to-Market strategy. How you find and sell to customers.
+- **AE** (Account Executive) = a...
+- til year 2 at the earliest.** v0.1 only ships `inferscope/rollout` (RL post-training), not `inferscope/embody`.
+
+### 3. As Path Alt-VLA — the month-18 trillion-dollar pivot option
+
+At month 18...
+- til paper 1 lands. Probability the narrative holds = probability the first paper lands on arxiv by day 90 with a credible co-author = maybe 50%.**
+
+### 2. "Tail-conditioned framing" (the unifying...
+- till common in existing robot deployments
+- ~275 TOPS
+- Can run smaller VLAs (2-4B parameters)
+
+**3. Cloud-edge hybrid**
+- Some inference on robot (fast reflexes)
+- Some inference in cloud (slower...
+- till deferred, can add later if you want)
+
+- `02_competitor_landscape.md` — the full ~25 company grouping (the "everything else" beyond NVIDIA and PI). Most of this content exists in my earlier...
+- til after you pick.
+- **Customer validation scripts** — what you'd say to Nathan Lambert / Aman Sanger to test a specific wedge in a real conversation. Deferred until after you pick.
+
+## Sanity...
+- till do the mining (W1-W10 in the earlier proposal). But instead of writing output files `01_vllm_sglang_issues.md`, each agent's output gets **decomposed into per-wedge files in the right...
+- Fixed by pivoting to Option A/B parallel strategy with updated candidates (Zhihao Jia CMU, Hao Zhang UCSD, Yiying Zhang UCSD) and Option B fallback (vLLM committer + Matei Zaharia advisor).
+   -...
+- till in progress. Let me check again in a moment.
+- till loading model weights + compiling kernels. Let me wait a bit and check again.
+- till running — let me check for the final output.
+- till running — 681 lines, no completion markers yet. It's compiling CUDA graphs after loading weights. That takes ~2-3 min, then inference on 10 prompts is fast (~30s), then it loads the FP16 model...
+- till in progress — should take another few minutes to complete both FP16 and FP8 runs.
+- tilization | 42.6% | **69.6%** |
+| Truncated | 1/10 | 1/10 |
+| Throughput | baseline | **1.02x** |
+
+**Key findings:**
+- **43.8% token budget savings** — easy prompts used 256 instead of 2048,...
+- til 42→70% | AERO: 48% compute reduction | Competitive, different layer |
+| FP8 KV throughput | 0.97x (free) | Industry consensus: ~1.0x | Confirms but not novel |
+
+**The rollout-diff tool is your...
+- tilization went from 42.6% to 69.6%
+- same truncation rate (1/10)
+- throughput neutral
+
+both tools are cli commands in inferscope:
+- `inferscope rollout-diff training.jsonl serving.jsonl`
+-...
+- tilization heatmaps.
+
+16. **Prefix cache optimizer for rollouts** — RL batches have massive prefix overlap (same system prompt). Build a prefix-aware batch scheduler that reuses KV across the...
+- til you've killed the bad individual paths
+- `timing_analysis/` is separate from `competitive_kills/` for no reason — timing IS the kill
+- No connection to the 150 wedges or 31 gaps you already...
+- till my categories, not yours.** I picked 8 markets based on the existing paths. But those paths were generated in one brainstorming session. The market list itself needs to be researched, not...
+- til convergence.
+
+**Could you use the IDEA with Claude Code?** Yes — you could implement the tournament pattern yourself:
+- Spawn 3 agents (keep original, adversarial rewrite, synthesis)
+- Spawn...
+- til the same strategy wins 2 rounds in a row — that's convergence.
+
+**What makes this better than me just recommending a path:**
+
+- My recommendations have prompt bias — I anchor on whatever I...
+- tilization and here's the config change that drops it to 1.1s" — that gap is the product.
+
+**Optimization surfaces you can own (ranked by defensibility):**
+
+**1. Kernel-level optimizations (highest...
+- till 10x off target**
+
+**30-50 humanoid robot companies** are each building bespoke export pipelines internally. The smaller ones can't. Nobody sells this as a product.
+
+**The play that actually gets...
+- tillation (Mar 2026), LoRA VLA fine-tuning (Dec 2025)
+
+---
+
+## 3. SIMULATION/DATA
+
+| Entry | What | Status | Opportunity? |
+|-------|------|--------|-------------|
+| NVIDIA Isaac Sim 5.0 |...
+- key takeaways on model scaling, architecture, deployment. Feb 2026. NVIDIA is actively mapping this space. Competitive threat.
+- Xiaomi-Robotics-0: 4.7B open-source VLA with async execution decoupled...
+- til you cancel:
+```bash
+caffeinate -dimsu &
+# Kill it later with: killall caffeinate
+```
+
+**For a more permanent solution** (survives reboots):
+
+1. System Settings > Energy > uncheck "Prevent...
+- till missing:
+
+**deployment_export (your #1):**
+- Exact technical blockers per framework — read the actual source code of LeRobot's inference pipeline, OpenPI's checkpoint format, GR00T's...
+- till missing in Phase 1:
+
+**Things that require talking to real humans (not more desk research):**
+- 5-10 user interviews — find people in LeRobot Discord, Open Robotics Discord, ROS Discourse who...
+- til chunk is nearly consumed (LeRobot uses `chunk_size_threshold=0.7`). (c) Network dropout: continue executing current chunk; VLASH's forward-rolling handles the stale-action case naturally. (d)...
+- tile of each dim to [-1, 1].
+- **GR00T N1**: Multiple modes per embodiment tag. Humanoids (GR1) use absolute joint positions. Single-arm (OXE_DROID) uses end-effector control. EE-based actions go...
+- till running.
+- tils.py (498 lines). The CBF implementation lives in utils.py with functions `compute_h_ij` (barrier value) and `compute_h_coeffs_3d` (barrier derivatives for the QP). The QP is solved per-step via...
+- till running (small output file). I'll write it when it completes. Let me commit what we have so far — 4 of 6 technical deep dives.
+- till running — I'll write and push that when it completes.
+
+**Phase 1 research status:**
+
+| Subcategory | landscape | demand_signals | competitors | build_candidates | technical_deep_dive...
+- till faces network RTT.
+
+Verdict: Option (b) is optimal. RoboECC and the "Characterizing VLA Models" paper (arxiv 2603.02271) both confirm action generation is the bottleneck (75% of latency) and is...
+- til validation.
+- **Leads directly to revenue.** Free tier = FP16 export. Pro tier = FP8/INT4 quantization + validation ($99/mo). The calibration database from user telemetry is the moat nobody else...
+- till work?)
+Step 9: Generate a ROS2 node that loads the engines and runs inference
+Step 10: Output a deployable package
+
+Output: one folder with TRT engines + ROS2 node + config
+        ready to run...
+- till needs to write their own inference server, action queue, camera input handling, and ROS2 integration. LeRobot's async server is broken (issues 2356, 3204, 2980). Nobody sells a working VLA...
+- till be 4x too slow because the flow matching denoiser runs 10 sequential steps through a transformer. This is the deep technical moat — kernel-level optimization that most robotics engineers can't...
+- tillation as a service** — train smaller VLAs from bigger ones specifically for edge deployment. Combines training + deployment.
+- **VLA sim-to-real gap closer** — tool that detects when a...
+- till running — it's past the download and inspection, now loading the model. Let me check again.
+- till building the image — installing lerobot and its dependencies. This is a big package with lots of deps (imageio, pynput, etc.). Should finish in another 1-2 min then the actual test runs.
+- till building the image. Hasn't started running the test yet. The lerobot install is heavy. Waiting.
+- till installing packages. Almost done — it's in the final `Installing collected packages` step. Should start running the actual test in under a minute.
+- till building the image. Lerobot from git + all deps on Python 3.12 takes a while. Still installing.
+
+## Files Changed
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/improvements/INDEX.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/improvements/research/competitive_gaps/INDEX.md`
+- `/Users/romirjain`
+- `/Users/romirjain/.claude/settings.json`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/business/potential_paths/INDEX.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/business/potential_paths/01_datadog_for_inference_v1.0.0_2026-04-10.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/business/potential_paths/02_benchmark_authority_v1.0.0_2026-04-10.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/business/potential_paths/03_reasoning_serving_v1.0.0_2026-04-10.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/business/potential_paths/04_rollout_as_a_service_v1.0.0_2026-04-10.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/business/potential_paths/05_dit_video_serving_v1.0.0_2026-04-10.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/business/potential_paths/06_physical_ai_stack_v1.0.0_2026-04-10.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/business/potential_paths/07_nvfp4_blackwell_v1.0.0_2026-04-10.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/business/potential_paths/00_inference_research_lab_v1.0.0_2026-04-10.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/business/potential_paths/path_00_deep_dive_v1.0.0_2026-04-10/01_research_agenda.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/business/potential_paths/path_00_deep_dive_v1.0.0_2026-04-10/02_runtime_architecture.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/business/potential_paths/path_00_deep_dive_v1.0.0_2026-04-10/03_data_architecture_isb1.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/business/potential_paths/path_00_deep_dive_v1.0.0_2026-04-10/04_product_experience.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/business/potential_paths/path_00_deep_dive_v1.0.0_2026-04-10/05_competitive_map.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/business/potential_paths/path_00_deep_dive_v1.0.0_2026-04-10/06_financial_model.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/business/potential_paths/path_00_deep_dive_v1.0.0_2026-04-10/07_gtm_customer_discovery.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/business/potential_paths/path_00_deep_dive_v1.0.0_2026-04-10/08_hiring_org_chart.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/business/potential_paths/path_00_deep_dive_v1.0.0_2026-04-10/09_publishing_lab_identity.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/business/potential_paths/path_00_deep_dive_v1.0.0_2026-04-10/10_infrastructure_compute.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/business/potential_paths/path_00_deep_dive_v1.0.0_2026-04-10/11_path_alt_vla_blueprint.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/business/potential_paths/path_00_deep_dive_v1.0.0_2026-04-10/12_six_twelve_month_sim.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/business/potential_paths/path_00_deep_dive_v1.0.0_2026-04-10/INDEX.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/research/vla_landscape_v1.0.0_2026-04-10/INDEX.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/research/vla_landscape_v1.0.0_2026-04-10/01_technical_primer.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/research/vla_landscape_v1.0.0_2026-04-10/04_entry_points.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/research/vla_landscape_v1.0.0_2026-04-10/05_fit_analysis.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/competitors/nvidia_gear_gr00t_v1.0.0_2026-04-10/01_deep_dive.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/competitors/physical_intelligence_v1.0.0_2026-04-10/01_deep_dive.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/research/wedges/INDEX.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/research/wedges/09_synthesis.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/research/wedges/rl_post_training/INDEX.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/research/wedges/reasoning/INDEX.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/research/wedges/scheduling/INDEX.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/research/wedges/kv_cache/INDEX.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/research/wedges/cross_stack_integration/INDEX.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/research/wedges/observability/INDEX.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/research/wedges/moe_serving/INDEX.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/research/wedges/structured_output/INDEX.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/research/wedges/quantization/INDEX.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/research/wedges/hardware_transition/INDEX.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/research/wedges/vla_embodied/INDEX.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/research/wedges/benchmarking/INDEX.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/research/wedges/agentic/INDEX.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/research/wedges/long_context/INDEX.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/research/wedges/multimodal/INDEX.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/research/wedges/dark_horse/INDEX.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/research/wedges/10_wave2_synthesis.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/EasyInference/CLAUDE.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/EasyInference/docs/WEDGE_INTEGRATION_PLAN.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/EasyInference/products/inferscope/src/inferscope/benchmarks/models.py`
+- `/Users/romirjain/Desktop/building projects/axion_compute/EasyInference/products/inferscope/src/inferscope/cli_benchmarks.py`
+- `/Users/romirjain/Desktop/building projects/axion_compute/EasyInference/products/inferscope/src/inferscope/server_benchmarks.py`
+- `/Users/romirjain/Desktop/building projects/axion_compute/EasyInference/products/inferscope/src/inferscope/benchmarks/__init__.py`
+- `/Users/romirjain/Desktop/building projects/axion_compute/EasyInference/products/inferscope/src/inferscope/benchmarks/catalog.py`
+- `/Users/romirjain/Desktop/building projects/axion_compute/EasyInference/products/inferscope/src/inferscope/cli.py`
+- `/Users/romirjain/Desktop/building projects/axion_compute/EasyInference/products/inferscope/src/inferscope/config.py`
+- `/Users/romirjain/Desktop/building projects/axion_compute/EasyInference/products/inferscope/src/inferscope/benchmarks/rollout_diff.py`
+- `/Users/romirjain/Desktop/building projects/axion_compute/EasyInference/products/inferscope/tests/test_rollout_diff.py`
+- `/Users/romirjain/Desktop/building projects/axion_compute/EasyInference/demo/modal_vllm.py`
+- `/Users/romirjain/Desktop/building projects/axion_compute/EasyInference/demo/modal_rollout_diff.py`
+- `/Users/romirjain/Desktop/building projects/axion_compute/EasyInference/demo/modal_kv_quant_bench.py`
+- `/Users/romirjain/Desktop/building projects/axion_compute/EasyInference/products/inferscope/src/inferscope/tools/kv_cache.py`
+- `/private/tmp/claude-501/-Users-romirjain/9dc38b22-aa9c-466e-a9cb-730cced5f6bf/tasks/b7pqfb3fy.output`
+- `/Users/romirjain/Desktop/building projects/axion_compute/EasyInference/products/isb1/workloads/base.py`
+- `/Users/romirjain/Desktop/building projects/axion_compute/EasyInference/products/isb1/workloads/chat.py`
+- `/Users/romirjain/Desktop/building projects/axion_compute/EasyInference/products/isb1/workloads/__init__.py`
+- `/Users/romirjain/Desktop/building projects/axion_compute/EasyInference/products/isb1/configs/workloads/coding.yaml`
+- `/Users/romirjain/Desktop/building projects/axion_compute/EasyInference/products/isb1/workloads/agent.py`
+- `/Users/romirjain/Desktop/building projects/axion_compute/EasyInference/products/isb1/workloads/rl_rollout.py`
+- `/Users/romirjain/Desktop/building projects/axion_compute/EasyInference/products/isb1/configs/workloads/rl_rollout.yaml`
+- `/Users/romirjain/Desktop/building projects/axion_compute/EasyInference/products/inferscope/src/inferscope/benchmarks/experiment_specs/dynamo-aggregated-lmcache-kimi-k2.yaml`
+- `/Users/romirjain/Desktop/building projects/axion_compute/EasyInference/products/inferscope/src/inferscope/benchmarks/experiment_specs/vllm-kv-fp8-quant-sweep.yaml`
+- `/Users/romirjain/Desktop/building projects/axion_compute/EasyInference/products/inferscope/src/inferscope/benchmarks/workloads/rl-rollout-smoke.yaml`
+- `/Users/romirjain/Desktop/building projects/axion_compute/EasyInference/products/isb1/tests/test_rl_rollout.py`
+- `/Users/romirjain/Desktop/building projects/axion_compute/EasyInference/products/inferscope/src/inferscope/tools/recommend.py`
+- `/Users/romirjain/Desktop/building projects/axion_compute/EasyInference/products/inferscope/src/inferscope/tools/pmax_scheduler.py`
+- `/Users/romirjain/Desktop/building projects/axion_compute/EasyInference/products/inferscope/tests/test_pmax_scheduler.py`
+- `/Users/romirjain/Desktop/building projects/axion_compute/EasyInference/demo/modal_pmax_sweep.py`
+- `/Users/romirjain/Desktop/building projects/axion_compute/EasyInference/products/inferscope/src/inferscope/server_profiling.py`
+- `/Users/romirjain/Desktop/building projects/axion_compute/EasyInference/products/inferscope/src/inferscope/optimization/checks.py`
+- `/Users/romirjain/Desktop/building projects/axion_compute/EasyInference/docs/PRD-inferscope-dynamo-production.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/EasyInference/products/inferscope/src/inferscope/telemetry/normalizer.py`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/improvements/research/competitive_gaps/32_vla_deployment_sdk_v1.0.0_2026-04-13.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/improvements/research/competitive_gaps/33_taiwan_hardware_ecosystem_v1.0.0_2026-04-13.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/business/potential_paths/08_vla_hardware_entry_v1.0.0_2026-04-13.md`
+- `/Users/romirjain/Downloads/roadmap.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/README.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/README.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/deployment_export/landscape.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/training_fine_tuning/landscape.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/simulation_data/landscape.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/action_head_optimization/landscape.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/realtime_runtime/landscape.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/cloud_edge_orchestration/landscape.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/cross_embodiment_transfer/landscape.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/safety_monitoring/landscape.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_2_bundle_with_hardware/README.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_3_make_vla_hardware/README.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_4_make_datacenter_hardware/README.md`
+- `/Users/romirjain/.claude/plans/clever-pondering-pancake.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/deployment_export/demand_signals.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/deployment_export/competitors.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/deployment_export/build_candidates.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/realtime_runtime/demand_signals.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/realtime_runtime/competitors.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/realtime_runtime/build_candidates.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/action_head_optimization/demand_signals.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/action_head_optimization/competitors.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/action_head_optimization/build_candidates.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/PRIORITY_MATRIX.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_2_bundle_with_hardware/landscape.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/EXISTING_RESEARCH_INDEX.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/safety_monitoring/demand_signals.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/safety_monitoring/competitors.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/safety_monitoring/build_candidates.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/cross_embodiment_transfer/demand_signals.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/cross_embodiment_transfer/competitors.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/cross_embodiment_transfer/build_candidates.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/cloud_edge_orchestration/demand_signals.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/cloud_edge_orchestration/competitors.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/cloud_edge_orchestration/build_candidates.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/training_fine_tuning/demand_signals.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/training_fine_tuning/competitors.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/training_fine_tuning/build_candidates.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_3_make_vla_hardware/landscape.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_4_make_datacenter_hardware/landscape.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_2_bundle_with_hardware/prerequisites.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/deployment_export/technical_blockers.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/deployment_export/checkpoint_formats.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/realtime_runtime/latency_budgets.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/safety_monitoring/eu_ai_act_requirements.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/action_head_optimization/feasibility_and_trt_plugins.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/pricing_and_distribution.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/cloud_edge_orchestration/network_and_fogros2.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/realtime_runtime/technical_deep_dive.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/cross_embodiment_transfer/technical_deep_dive.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/safety_monitoring/technical_deep_dive.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/action_head_optimization/technical_deep_dive.md`
+- `/Users/romirjain/Desktop/building projects/axion_compute/vla_to_hardware_roadmap/phase_1_vla_software/cloud_edge_orchestration/technical_deep_dive.md`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/pyproject.toml`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/__init__.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/config.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/checkpoint.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/decompose.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/exporters/__init__.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/exporters/onnx_export.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/exporters/trt_build.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/inference.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/validate.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/benchmark.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/cli.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/runtime/__init__.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/safety/__init__.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/kernels/__init__.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/tests/test_decompose.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/tests/test_config.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/tests/test_validate.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/tests/test_cli.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/README.md`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/modal_test_export.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/modal_full_export.py`
+
+## Issues
+- `re-add`
+- `hf-mcp-server`
+- `re-read`
+- `re-scans`
+- `pre-revenue`
+- `of-funnel`
+- `one-line`
+- `pre-mortem`
+- `to-have`
+- `per-judge`
+- `top-ranked`
+- `co-founder`
+- `per-path`
+- `lab-with-commercial`
+- `for-serving`
+- `to-first-dollar`
+- `to-first-paper`
+- `co-authors`
+- `one-paper`
+- `co-design`
+- `or-confirm`
+- `co-author`
+- `co-founded`
+- `per-year`
+- `co-founder-recruiting`
+- `re-open`
+- `dry-run`
+- `by-day`
+- `pre-commit`
+- `per-paper`
+- `by-month`
+- `by-tier`
+- `re-plan`
+- `per-pillar`
+- `pre-brief`
+- `by-slide`
+- `pre-writing`
+- `by-article`
+- `by-step`
+- `low-medium`
+- `to-day`
+- `non-lead`
+- `one-page`
+- `per-call`
+- `of-thought`
+- `low-level`
+- `pre-print`
+- `it-sees`
+- `you-say`
+- `pre-product`
+- `sub-50ms`
+- `pi-class`
+- `low-cost`
+- `pay-per-token`
+- `to-reality`
+- `to-real`
+- `in-the-loop`
+- `one-stop`
+- `as-brain`
+- `in-house`
+- `bay-area`
+- `pre-pi1`
+- `per-company`
+- `net-new`
+- `hot-loading`
+- `hot-expert`
+- `on-device`
+- `to-noise`
+- `in-time`
+- `of-experts`
+- `to-tool`
+- `per-wedge`
+- `top-level`
+- `pre-create`
+- `log-prob`
+- `re-run`
+- `on-new-architectures`
+- `to-paper`
+- `of-line`
+- `pre-empting`
+- `per-request`
+- `log-probs`
+- `one-time`
+- `per-second`
+- `on-demand`
+- `top-left`
+- `per-token`
+- `to-end`
+- `kv-quant-estimate`
+- `rl-rollout-smoke`
+- `of-service`
+- `rl-audit`
+- `pre-check`
+- `and-tell`
+- `per-prompt`
+- `kv-cache-dtype`
+- `one-shot`
+- `pre-built`
+- `vs-answer`
+- `by-quarter`
+- `pre-commits`
+- `re-search`
+- `per-chip`
+- `per-vendor`
+- `by-side`
+- `per-correct-answer`
+- `de-risks`
+- `per-layer`
+- `per-model`
+- `num-gpus`
+- `to-market`
+- `pre-install`
+- `on-policy`
+- `non-uniform`
+- `low-latency`
+- `co-aware`
+- `and-play`
+- `id-here`
+- `by-line`
+- `per-step`
+- `mid-graph`
+- `mid-chunk`
+- `per-message`
+- `off-the-shelf`
+- `to-dual`
+- `hpp-fcl`
+- `vla-edge`
+- `for-loop`
+- `sim-trained`
+- `bit-exact`
+
+## Tool Usage
+
+| Tool | Count |
+|------|-------|
+| Agent | 95 |
+| Bash | 163 |
+| Edit | 33 |
+| ExitPlanMode | 2 |
+| Glob | 2 |
+| Read | 49 |
+| ToolSearch | 4 |
+| WebFetch | 19 |
+| Write | 148 |
+
+## Tokens
+
+- **Input:** 0
+- **Output:** 0
+- **Total:** ~3482630 (estimated)
