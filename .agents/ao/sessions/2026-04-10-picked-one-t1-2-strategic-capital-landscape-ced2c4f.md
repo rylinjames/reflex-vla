@@ -528,7 +528,7 @@ Output: one folder with TRT engines + ROS2 node + config
 | Tool | Count |
 |------|-------|
 | Agent | 96 |
-| Bash | 193 |
+| Bash | 195 |
 | Edit | 43 |
 | ExitPlanMode | 2 |
 | Glob | 2 |
@@ -541,4 +541,4 @@ Output: one folder with TRT engines + ROS2 node + config
 
 - **Input:** 0
 - **Output:** 0
-- **Total:** ~3662295 (estimated)
+- **Total:** ~3666582 (estimated)
