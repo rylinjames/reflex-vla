@@ -220,6 +220,14 @@ Output: one folder with TRT engines + ROS2 node + config
 - till building image — installing deps. Almost done with the install step.
 - till executing the dry run and full export. Let me check again.
 - till running — CLI and dry run passed, now doing the full export. Not done yet.
+- til they need them. Each command is discovered naturally:
+
+- Export works but model is slow → they find `reflex turbo`
+- They want persistent serving → they find `reflex serve`
+- They're...
+- till types the same command. They don't know or care that you added a new framework — it just works with more models.
+
+`reflex turbo` starts with CUDA graph capture. Later you add Triton fused...
 
 ## Files Changed
 - `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/improvements/INDEX.md`
@@ -396,6 +404,12 @@ Output: one folder with TRT engines + ROS2 node + config
 - `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/modal_e2e_pipeline.py`
 - `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/exporters/smolvla_exporter.py`
 - `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/modal_cli_export.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/runtime/server.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/tests/test_server.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/safety/guard.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/tests/test_guard.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/kernels/turbo.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/tests/test_turbo.py`
 
 ## Issues
 - `re-add`
@@ -531,23 +545,24 @@ Output: one folder with TRT engines + ROS2 node + config
 - `odd-indexed`
 - `key-value`
 - `non-fatal`
+- `one-command`
 
 ## Tool Usage
 
 | Tool | Count |
 |------|-------|
 | Agent | 96 |
-| Bash | 227 |
-| Edit | 51 |
+| Bash | 239 |
+| Edit | 60 |
 | ExitPlanMode | 2 |
 | Glob | 2 |
-| Read | 70 |
+| Read | 79 |
 | ToolSearch | 4 |
 | WebFetch | 19 |
-| Write | 157 |
+| Write | 165 |
 
 ## Tokens
 
 - **Input:** 0
 - **Output:** 0
-- **Total:** ~3906442 (estimated)
+- **Total:** ~4130310 (estimated)
