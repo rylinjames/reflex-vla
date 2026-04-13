@@ -410,6 +410,12 @@ Output: one folder with TRT engines + ROS2 node + config
 - `/Users/romirjain/Desktop/building projects/reflex-vla/tests/test_guard.py`
 - `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/kernels/turbo.py`
 - `/Users/romirjain/Desktop/building projects/reflex-vla/tests/test_turbo.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/runtime/split.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/models/adapt.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/validate_training.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/tests/test_split.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/tests/test_adapt.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/tests/test_check.py`
 
 ## Issues
 - `re-add`
@@ -552,17 +558,17 @@ Output: one folder with TRT engines + ROS2 node + config
 | Tool | Count |
 |------|-------|
 | Agent | 96 |
-| Bash | 239 |
+| Bash | 241 |
 | Edit | 60 |
 | ExitPlanMode | 2 |
 | Glob | 2 |
 | Read | 79 |
 | ToolSearch | 4 |
 | WebFetch | 19 |
-| Write | 165 |
+| Write | 171 |
 
 ## Tokens
 
 - **Input:** 0
 - **Output:** 0
-- **Total:** ~4130310 (estimated)
+- **Total:** ~4214708 (estimated)
