@@ -37,6 +37,7 @@ tags:
 **What's blocking us:**
 - VinylScout, Santhica, TorahFlow likely have paywalls before the main screens
 - The tool can't "see" visually — it...
+- till need better screenshots from your phone for: VinylScout (behind paywall), LockMode, DailyGrace, Offleaf, BrainTrain. Send them when you can and I'll drop them in.
 
 ## Files Changed
 - `/Users/romirjain/Desktop/building projects/PairLaunch/index.html`
@@ -51,6 +52,10 @@ tags:
 - `/Users/romirjain/Desktop/building projects/PairLaunch/images/santhica_new.png`
 - `/Users/romirjain/Desktop/building projects/PairLaunch/images/torahflow_new.png`
 - `/Users/romirjain/Desktop/building projects/PairLaunch/images/dopafry.png`
+- `/tmp/screen_frames/frame_01.png`
+- `/tmp/screen_frames/frame_03.png`
+- `/tmp/screen_frames/frame_05.png`
+- `/tmp/screen_frames/frame_07.png`
 
 ## Issues
 - `on-brand`
@@ -64,9 +69,9 @@ tags:
 | Tool | Count |
 |------|-------|
 | Agent | 2 |
-| Bash | 88 |
-| Edit | 15 |
-| Read | 14 |
+| Bash | 95 |
+| Edit | 19 |
+| Read | 18 |
 | ToolSearch | 3 |
 | mcp__domain-search__search_domain | 153 |
 | mcp__domain-search__suggest_domains_smart | 2 |
@@ -75,4 +80,4 @@ tags:
 
 - **Input:** 0
 - **Output:** 0
-- **Total:** ~524289 (estimated)
+- **Total:** ~609879 (estimated)
