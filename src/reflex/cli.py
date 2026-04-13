@@ -164,6 +164,65 @@ def benchmark_cmd(
 
 
 @app.command()
+def guard(
+    action: str = typer.Argument(help="Action to check: 'init' to create config, 'check' to validate"),
+    urdf: str = typer.Option("", help="URDF file path to extract joint limits"),
+    config: str = typer.Option("", help="Safety config JSON file path"),
+    output: str = typer.Option("./safety_config.json", help="Output path for safety config"),
+    num_joints: int = typer.Option(6, help="Number of joints (when no URDF)"),
+    verbose: bool = typer.Option(False, help="Verbose logging"),
+):
+    """Configure and test safety guardrails for VLA actions."""
+    _setup_logging(verbose)
+
+    from reflex.safety import ActionGuard, SafetyLimits
+
+    if action == "init":
+        if urdf:
+            limits = SafetyLimits.from_urdf(urdf)
+            console.print(f"[green]Extracted limits from URDF: {urdf}[/green]")
+        else:
+            limits = SafetyLimits.default(num_joints)
+            console.print(f"[yellow]Using default limits for {num_joints} joints[/yellow]")
+
+        console.print(f"  Joints: {len(limits.joint_names)}")
+        for i, name in enumerate(limits.joint_names):
+            console.print(
+                f"    {name}: pos=[{limits.position_min[i]:.2f}, {limits.position_max[i]:.2f}], "
+                f"vel_max={limits.velocity_max[i]:.2f}"
+            )
+
+        limits.save(output)
+        console.print(f"\n[bold green]Safety config saved: {output}[/bold green]")
+        console.print(f"[dim]Use with: reflex serve --safety-config {output}[/dim]")
+
+    elif action == "check":
+        if config:
+            limits = SafetyLimits.from_json(config)
+        elif urdf:
+            limits = SafetyLimits.from_urdf(urdf)
+        else:
+            limits = SafetyLimits.default(num_joints)
+
+        guard_instance = ActionGuard(limits=limits, mode="clamp")
+        import numpy as np
+
+        test_actions = np.random.randn(5, num_joints).astype(np.float32) * 5
+        safe_actions, results = guard_instance.check(test_actions)
+
+        console.print(f"\n[bold]Safety Check (5 random actions, range [-5, 5]):[/bold]")
+        for i, r in enumerate(results):
+            status = "[green]SAFE[/green]" if r.safe else "[red]CLAMPED[/red]" if r.clamped else "[red]REJECTED[/red]"
+            console.print(f"  Action {i}: {status} ({len(r.violations)} violations, {r.check_time_ms:.3f}ms)")
+            for v in r.violations[:3]:
+                console.print(f"    {v}")
+
+    else:
+        console.print(f"[red]Unknown action: {action}. Use 'init' or 'check'.[/red]")
+        raise typer.Exit(1)
+
+
+@app.command()
 def serve(
     export_dir: str = typer.Argument(help="Path to exported model directory"),
     port: int = typer.Option(8000, help="Server port"),
