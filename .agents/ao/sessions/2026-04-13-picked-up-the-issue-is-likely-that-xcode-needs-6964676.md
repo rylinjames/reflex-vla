@@ -121,6 +121,13 @@ ITMS-90683: Missing purpose string in...
 - `/Users/romirjain/Desktop/building projects/braintrain/CortexRep/Games/VerbalFluencyGame.swift`
 - `/Users/romirjain/Desktop/building projects/braintrain/CortexRep/Games/CorsiBlockGame.swift`
 - `/Users/romirjain/Desktop/building projects/braintrain/CortexRep/Games/DividedAttentionGame.swift`
+- `/Users/romirjain/Desktop/building projects/braintrain/CortexRep/Views/TrainingSessionView.swift`
+- `/Users/romirjain/Desktop/building projects/braintrain/CortexRep/Views/FocusTrainingView.swift`
+- `/Users/romirjain/Desktop/building projects/braintrain/CortexRep/Engine/SessionManager.swift`
+- `/Users/romirjain/Desktop/building projects/braintrain/CortexRep/Views/AchievementsView.swift`
+- `/Users/romirjain/Desktop/building projects/braintrain/CortexRep/ContentView.swift`
+- `/Users/romirjain/Desktop/building projects/braintrain/CortexRep/Views/SettingsView.swift`
+- `/Users/romirjain/Desktop/building projects/braintrain/CortexRep/Components/GameUI.swift`
 
 ## Issues
 - `per-trial`
@@ -166,12 +173,12 @@ ITMS-90683: Missing purpose string in...
 |------|-------|
 | Agent | 7 |
 | Bash | 111 |
-| Edit | 37 |
-| Grep | 1 |
-| Read | 59 |
+| Edit | 46 |
+| Grep | 2 |
+| Read | 65 |
 | ToolSearch | 2 |
 | WebSearch | 16 |
-| Write | 75 |
+| Write | 77 |
 | mcp__paper-search__search_arxiv | 7 |
 | mcp__paper-search__search_pubmed | 1 |
 | mcp__paper-search__search_semantic_scholar | 1 |
@@ -180,4 +187,4 @@ ITMS-90683: Missing purpose string in...
 
 - **Input:** 0
 - **Output:** 0
-- **Total:** ~1578415 (estimated)
+- **Total:** ~1634669 (estimated)
