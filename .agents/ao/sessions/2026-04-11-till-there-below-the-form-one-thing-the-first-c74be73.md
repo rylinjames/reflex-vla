@@ -50,6 +50,7 @@ tags:
 - `/Users/romirjain/Desktop/building projects/PairLaunch/images/taptic_new.png`
 - `/Users/romirjain/Desktop/building projects/PairLaunch/images/santhica_new.png`
 - `/Users/romirjain/Desktop/building projects/PairLaunch/images/torahflow_new.png`
+- `/Users/romirjain/Desktop/building projects/PairLaunch/images/dopafry.png`
 
 ## Issues
 - `on-brand`
@@ -63,9 +64,9 @@ tags:
 | Tool | Count |
 |------|-------|
 | Agent | 2 |
-| Bash | 80 |
-| Edit | 11 |
-| Read | 11 |
+| Bash | 88 |
+| Edit | 15 |
+| Read | 14 |
 | ToolSearch | 3 |
 | mcp__domain-search__search_domain | 153 |
 | mcp__domain-search__suggest_domains_smart | 2 |
@@ -74,4 +75,4 @@ tags:
 
 - **Input:** 0
 - **Output:** 0
-- **Total:** ~480507 (estimated)
+- **Total:** ~524289 (estimated)

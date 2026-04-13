@@ -217,6 +217,9 @@ Output: one folder with TRT engines + ROS2 node + config
 - till installing packages. Almost done — it's in the final `Installing collected packages` step. Should start running the actual test in under a minute.
 - till building the image. Lerobot from git + all deps on Python 3.12 takes a while. Still installing.
 - till building image — saving it now. Test runs next. Almost there.
+- till building image — installing deps. Almost done with the install step.
+- till executing the dry run and full export. Let me check again.
+- till running — CLI and dry run passed, now doing the full export. Not done yet.
 
 ## Files Changed
 - `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/improvements/INDEX.md`
@@ -391,6 +394,8 @@ Output: one folder with TRT engines + ROS2 node + config
 - `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/modal_full_pipeline.py`
 - `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/modal_vlm_export.py`
 - `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/modal_e2e_pipeline.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/exporters/smolvla_exporter.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/modal_cli_export.py`
 
 ## Issues
 - `re-add`
@@ -525,23 +530,24 @@ Output: one folder with TRT engines + ROS2 node + config
 - `bit-exact`
 - `odd-indexed`
 - `key-value`
+- `non-fatal`
 
 ## Tool Usage
 
 | Tool | Count |
 |------|-------|
 | Agent | 96 |
-| Bash | 206 |
-| Edit | 47 |
+| Bash | 223 |
+| Edit | 51 |
 | ExitPlanMode | 2 |
 | Glob | 2 |
-| Read | 64 |
+| Read | 68 |
 | ToolSearch | 4 |
 | WebFetch | 19 |
-| Write | 155 |
+| Write | 157 |
 
 ## Tokens
 
 - **Input:** 0
 - **Output:** 0
-- **Total:** ~3746038 (estimated)
+- **Total:** ~3851763 (estimated)

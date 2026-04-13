@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -55,6 +56,8 @@ def export(
     output: str = typer.Option("./reflex_export", help="Output directory"),
     precision: str = typer.Option("fp16", help="Precision: fp16, fp8, int8"),
     opset: int = typer.Option(19, help="ONNX opset version"),
+    chunk_size: int = typer.Option(50, help="Action chunk size"),
+    no_validate: bool = typer.Option(False, help="Skip ONNX validation"),
     dry_run: bool = typer.Option(False, help="Check exportability without building engines"),
     verbose: bool = typer.Option(False, help="Verbose logging"),
 ):
@@ -63,30 +66,74 @@ def export(
     hardware = get_hardware_profile(target)
 
     console.print(f"\n[bold]Reflex Export[/bold]")
-    console.print(f"  Model:    {model}")
-    console.print(f"  Target:   {hardware.name}")
+    console.print(f"  Model:     {model}")
+    console.print(f"  Target:    {hardware.name} ({hardware.memory_gb}GB, {hardware.trt_precision})")
     console.print(f"  Precision: {precision}")
-    console.print(f"  Output:   {output}")
+    console.print(f"  Output:    {output}")
     console.print()
 
-    # Load checkpoint
-    console.print("[dim]Loading checkpoint...[/dim]")
-    from reflex.checkpoint import load_checkpoint, detect_model_type, validate_checkpoint
-
-    state_dict, config = load_checkpoint(model)
-    model_type = detect_model_type(state_dict)
-    console.print(f"  Detected: {model_type or 'unknown'}")
-
-    warnings = validate_checkpoint(state_dict, model_type or "unknown")
-    for w in warnings:
-        console.print(f"  [yellow]Warning: {w}[/yellow]")
-
     if dry_run:
+        console.print("[dim]Checking exportability...[/dim]")
+        from reflex.checkpoint import load_checkpoint, detect_model_type, validate_checkpoint
+
+        state_dict, config = load_checkpoint(model)
+        model_type = detect_model_type(state_dict)
+        console.print(f"  Detected: {model_type or 'unknown'}")
+        total_params = sum(v.numel() for v in state_dict.values())
+        console.print(f"  Params:   {total_params / 1e6:.1f}M")
+
+        warnings = validate_checkpoint(state_dict, model_type or "unknown")
+        for w in warnings:
+            console.print(f"  [yellow]Warning: {w}[/yellow]")
+
+        # Check memory fit
+        weight_gb = total_params * 2 / 1e9  # FP16
+        if weight_gb > hardware.memory_gb * 0.7:
+            console.print(f"  [red]Model ({weight_gb:.1f}GB) may not fit on {hardware.name} ({hardware.memory_gb}GB)[/red]")
+        else:
+            console.print(f"  [green]Model ({weight_gb:.1f}GB) fits on {hardware.name} ({hardware.memory_gb}GB)[/green]")
+
         console.print("\n[green]Dry run complete. Export should work.[/green]")
         raise typer.Exit()
 
-    console.print("\n[bold green]Export complete.[/bold green]")
-    console.print(f"Output: {output}")
+    # Full export
+    from reflex.exporters.smolvla_exporter import export_smolvla
+
+    export_config = ExportConfig(
+        model_id=model,
+        target=target,
+        output_dir=output,
+        precision=precision,
+        opset=opset,
+        action_chunk_size=chunk_size,
+        validate=not no_validate,
+    )
+
+    import time
+    start = time.perf_counter()
+    result = export_smolvla(export_config)
+    elapsed = time.perf_counter() - start
+
+    # Print results
+    console.print(f"\n[bold green]Export complete in {elapsed:.1f}s[/bold green]")
+    console.print(f"  Output: {output}")
+
+    if "files" in result:
+        for name, path in result["files"].items():
+            size = os.path.getsize(path) / 1e6 if os.path.exists(path) else 0
+            console.print(f"  {name}: {path} ({size:.1f}MB)")
+
+    if "metadata" in result and "onnx_validation" in result["metadata"]:
+        val = result["metadata"]["onnx_validation"]
+        status = "[green]PASS[/green]" if val["passed"] else "[red]FAIL[/red]"
+        console.print(f"  Validation: {status} (max_diff={val['max_diff']:.2e})")
+
+    if "metadata" in result and "expert" in result["metadata"]:
+        meta = result["metadata"]["expert"]
+        console.print(f"  Expert: {meta['num_layers']} layers, {meta['total_params_m']:.1f}M params")
+
+    console.print(f"\n  [dim]Run on target hardware:[/dim]")
+    console.print(f"  [cyan]reflex benchmark {output}[/cyan]")
 
 
 @app.command()
