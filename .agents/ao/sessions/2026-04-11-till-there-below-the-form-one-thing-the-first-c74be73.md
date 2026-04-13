@@ -32,6 +32,11 @@ tags:
 3. **Fastlane Snapshot** — automates App Store screenshot capture across devices/languages, but requires UI tests written first.
 
 **The...
+- till need `xcrun simctl io` to grab the actual PNG.
+
+**What's blocking us:**
+- VinylScout, Santhica, TorahFlow likely have paywalls before the main screens
+- The tool can't "see" visually — it...
 
 ## Files Changed
 - `/Users/romirjain/Desktop/building projects/PairLaunch/index.html`
@@ -41,6 +46,10 @@ tags:
 - `/Users/romirjain/Desktop/building projects/PairLaunch/images/santhica.png`
 - `/Users/romirjain/Desktop/building projects/PairLaunch/images/torahflow.png`
 - `/Users/romirjain/Desktop/building projects/PairLaunch/images/calorieai.png`
+- `/Users/romirjain/Desktop/building projects/PairLaunch/images/vinylscout_new.png`
+- `/Users/romirjain/Desktop/building projects/PairLaunch/images/taptic_new.png`
+- `/Users/romirjain/Desktop/building projects/PairLaunch/images/santhica_new.png`
+- `/Users/romirjain/Desktop/building projects/PairLaunch/images/torahflow_new.png`
 
 ## Issues
 - `on-brand`
@@ -54,9 +63,9 @@ tags:
 | Tool | Count |
 |------|-------|
 | Agent | 2 |
-| Bash | 27 |
+| Bash | 80 |
 | Edit | 11 |
-| Read | 7 |
+| Read | 11 |
 | ToolSearch | 3 |
 | mcp__domain-search__search_domain | 153 |
 | mcp__domain-search__suggest_domains_smart | 2 |
@@ -65,4 +74,4 @@ tags:
 
 - **Input:** 0
 - **Output:** 0
-- **Total:** ~372567 (estimated)
+- **Total:** ~480507 (estimated)

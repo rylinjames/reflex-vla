@@ -128,6 +128,16 @@ ITMS-90683: Missing purpose string in...
 - `/Users/romirjain/Desktop/building projects/braintrain/CortexRep/ContentView.swift`
 - `/Users/romirjain/Desktop/building projects/braintrain/CortexRep/Views/SettingsView.swift`
 - `/Users/romirjain/Desktop/building projects/braintrain/CortexRep/Components/GameUI.swift`
+- `/Users/romirjain/Desktop/building projects/braintrain/CortexRep/Views/HomeView.swift`
+- `/Users/romirjain/Desktop/building projects/braintrain/CortexRep/Views/CalendarHeatmapView.swift`
+- `/Users/romirjain/Desktop/building projects/braintrain/CortexRep/Views/SessionDetailView.swift`
+- `/Users/romirjain/Desktop/building projects/braintrain/CortexRep/Views/RestDayView.swift`
+- `/Users/romirjain/Desktop/building projects/braintrain/CortexRep/Games/MentalRotationGame.swift`
+- `/Users/romirjain/Desktop/building projects/braintrain/CortexRep/Games/EmotionRecognitionGame.swift`
+- `/Users/romirjain/Desktop/building projects/braintrain/CortexRep/Games/VerbalNBackGame.swift`
+- `/Users/romirjain/Desktop/building projects/braintrain/CortexRep/Games/AttentionBiasGame.swift`
+- `/Users/romirjain/Desktop/building projects/braintrain/CortexRep/Views/OnboardingView.swift`
+- `/Users/romirjain/Desktop/building projects/braintrain/CortexRep/Engine/HapticManager.swift`
 
 ## Issues
 - `per-trial`
@@ -166,19 +176,26 @@ ITMS-90683: Missing purpose string in...
 - `re-vibe`
 - `and-spawn`
 - `ag-5k2`
+- `sub-300ms`
+- `on-ramp`
+- `bug-hunt`
+- `bug-report-template`
+- `by-one`
+- `bug-test-failure`
+- `by-zero`
 
 ## Tool Usage
 
 | Tool | Count |
 |------|-------|
 | Agent | 7 |
-| Bash | 111 |
-| Edit | 46 |
-| Grep | 2 |
-| Read | 65 |
+| Bash | 121 |
+| Edit | 66 |
+| Grep | 5 |
+| Read | 71 |
 | ToolSearch | 2 |
 | WebSearch | 16 |
-| Write | 77 |
+| Write | 85 |
 | mcp__paper-search__search_arxiv | 7 |
 | mcp__paper-search__search_pubmed | 1 |
 | mcp__paper-search__search_semantic_scholar | 1 |
@@ -187,4 +204,4 @@ ITMS-90683: Missing purpose string in...
 
 - **Input:** 0
 - **Output:** 0
-- **Total:** ~1634669 (estimated)
+- **Total:** ~1781979 (estimated)
