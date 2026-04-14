@@ -163,6 +163,21 @@ class ReflexServer:
 
         if self._adaptive_steps:
             logger.info("reflex turbo: adaptive denoise step count ENABLED")
+            # Honesty per the Apr-14 phase IV bench: the 0.01 velocity-norm-delta
+            # threshold works well on pi0 (~58% latency savings, action diff 0.07)
+            # but never triggers on smolvla, rarely triggers on pi0.5, and triggers
+            # too aggressively on gr00t (action diff 0.67 — meaningful drift). The
+            # per-model threshold tuning lands in v0.2.
+            model_type = self.config.get("model_type", "")
+            if model_type and model_type != "pi0":
+                logger.warning(
+                    "adaptive_steps with model_type=%s is unvalidated. "
+                    "Phase IV bench (Apr 14): smolvla never triggers (no savings), "
+                    "pi0.5 rarely triggers, gr00t triggers too aggressively "
+                    "(action diff 0.67). Use --adaptive-steps with model_type=pi0 "
+                    "for now; per-model thresholds land in v0.2.",
+                    model_type,
+                )
         if self._deadline_ms is not None:
             logger.info("deadline enforcement: %.1f ms", self._deadline_ms)
 

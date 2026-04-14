@@ -169,7 +169,7 @@ reflex serve ./pi0 \
 
 That's the full production-server invocation:
 - `--safety-config` clamps unsafe actions
-- `--adaptive-steps` skips denoise iterations on easy tasks
+- `--adaptive-steps` skips denoise iterations on easy tasks (validated on pi0 — ~58% savings, action diff 0.07; unvalidated for other models in v0.1, server prints a warning)
 - `--deadline-ms 33` returns last-known-good action if inference doesn't finish in 33ms
 - `--cloud-fallback` routes through a remote cluster on edge failure
 - `--max-batch 8` shares the GPU across up to 8 robots
