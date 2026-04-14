@@ -29,6 +29,62 @@ class DecomposedRMSNorm(nn.Module):
         return (x_normed * self.weight).to(x.dtype)
 
 
+class DecomposedAdaRMSNorm(nn.Module):
+    """Adaptive (time-conditioned) RMSNorm for pi0.5 expert layers.
+
+    Given a time embedding, projects it through a dense layer into
+    (scale, shift, gate) chunks, then modulates the normalized activations:
+
+        normalized = x * rsqrt(mean(x^2) + eps)
+        scale, shift, gate = dense(time_emb).chunk(3, dim=-1)
+        out = gate * (normalized * (1 + scale) + shift)
+
+    Follows AdaLN-style modulation from DiT. The `gate` applies on the
+    residual side (after attention/MLP block). In pi0.5 the layernorm
+    produces pre-norm output + gate; the gate is applied when the module
+    is called with `return_gate=True`.
+
+    The `dense.weight` has shape [3*hidden, time_dim] and `dense.bias`
+    has shape [3*hidden] — confirmed on lerobot/pi05_base.
+    """
+
+    def __init__(
+        self,
+        hidden_size: int,
+        time_dim: int | None = None,
+        eps: float = 1e-6,
+    ):
+        super().__init__()
+        self.hidden_size = hidden_size
+        self.eps = eps
+        self.dense = nn.Linear(time_dim or hidden_size, 3 * hidden_size, bias=True)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        time_emb: torch.Tensor,
+        return_gate: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        # RMSNorm
+        variance = x.to(torch.float32).pow(2).mean(-1, keepdim=True)
+        normed = (x * torch.rsqrt(variance + self.eps)).to(x.dtype)
+
+        # Time conditioning
+        projection = self.dense(time_emb)  # [..., 3*hidden]
+        scale, shift, gate = projection.chunk(3, dim=-1)
+
+        # Broadcast scale/shift/gate to [b, seq, hidden] from [b, hidden] or [b, 1, hidden]
+        if scale.dim() == normed.dim() - 1:
+            scale = scale.unsqueeze(1)
+            shift = shift.unsqueeze(1)
+            gate = gate.unsqueeze(1)
+
+        modulated = normed * (1 + scale) + shift
+        if return_gate:
+            return modulated, gate
+        return modulated
+
+
 class DecomposedRotaryEmbedding(nn.Module):
     """Rotary Position Embedding decomposed for ONNX export.
 

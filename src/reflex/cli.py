@@ -93,11 +93,8 @@ def export(
         else:
             console.print(f"  [green]Model ({weight_gb:.1f}GB) fits on {hardware.name} ({hardware.memory_gb}GB)[/green]")
 
-        if model_type == "pi05":
-            console.print("\n[yellow]pi0.5 uses AdaRMSNorm (time-conditioned) — full export not yet supported. "
-                          "Use pi0_base for now or wait for v0.2.[/yellow]")
-        elif model_type is None:
-            console.print("\n[yellow]Unknown model type — export may fail. Supported: smolvla, pi0.[/yellow]")
+        if model_type is None:
+            console.print("\n[yellow]Unknown model type — export may fail. Supported: smolvla, pi0, pi05.[/yellow]")
         else:
             console.print("\n[green]Dry run complete. Export should work.[/green]")
         raise typer.Exit()
@@ -105,7 +102,7 @@ def export(
     # Full export — auto-dispatch to the right exporter based on model type
     from reflex.checkpoint import load_checkpoint, detect_model_type
     from reflex.exporters.smolvla_exporter import export_smolvla
-    from reflex.exporters.pi0_exporter import export_pi0
+    from reflex.exporters.pi0_exporter import export_pi0, export_pi05
 
     # Load once, detect, then pass state_dict to the exporter (avoids double-load)
     console.print("[dim]Loading checkpoint...[/dim]")
@@ -125,7 +122,9 @@ def export(
 
     import time
     start = time.perf_counter()
-    if model_type in ("pi0", "pi05"):
+    if model_type == "pi05":
+        result = export_pi05(export_config, state_dict=state_dict)
+    elif model_type == "pi0":
         result = export_pi0(export_config, state_dict=state_dict)
     else:
         result = export_smolvla(export_config, state_dict=state_dict)
