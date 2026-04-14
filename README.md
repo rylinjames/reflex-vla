@@ -15,8 +15,8 @@ curl -X POST http://localhost:8000/act -d '{"instruction":"pick up the cup","sta
 |---|---|---|---|
 | SmolVLA | `lerobot/smolvla_base` | 450M | ONNX + validated (max_diff=3.8e-06) |
 | pi0 | `lerobot/pi0_base` | 3.5B | ONNX + validated (max_diff=3.7e-08) |
-| pi0.5 | `lerobot/pi05_base` | 3.62B | ONNX with AdaRMSNorm (max_diff=2.4e-06) |
-| GR00T | `nvidia/GR00T-N1.6` | 3.3B | planned |
+| pi0.5 | `lerobot/pi05_base` | 3.62B | ONNX + AdaRMSNorm (max_diff=2.4e-06) |
+| GR00T N1.6 | `nvidia/GR00T-N1.6-3B` | 3.29B | ONNX + DiT/AdaLN (max_diff=2.2e-05) |
 | OpenVLA | `openvla/openvla-7b` | 7.5B | planned |
 
 Run `reflex models` to see current support.
@@ -54,6 +54,9 @@ Full E2E (export → serve → POST /act) tested on Modal A100, ONNX Runtime CPU
 | SmolVLA | 100M | 47s | 3.3e-06 | 246ms | 4.1 |
 | pi0 | 314M | 97s | 6.0e-08 | 588ms | 1.7 |
 | pi0.5 | 427M | 95s | 2.5e-06 | 704ms | 1.4 |
+| GR00T N1.6 | 1091M | 64s | 2.2e-05 | — | — |
 
-GPU provider and TensorRT builds (on Jetson) expected to push these 5-10x faster.
-Validation diff is measured against the original PyTorch forward pass.
+GR00T serve benchmark pending (expert-only export works; serve path
+needs GR00T-aware denoising config — different chunk shape/dtype
+than SmolVLA/pi0/pi0.5). GPU provider and TensorRT builds (on Jetson)
+expected to push latencies 5-10x faster.
