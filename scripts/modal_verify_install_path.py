@@ -1,0 +1,186 @@
+"""Test that the README quickstart install path actually works on a fresh box.
+
+Spins up a clean Linux container, runs the EXACT command from README:
+  pip install 'reflex-vla[serve,gpu] @ git+https://github.com/rylinjames/reflex-vla'
+  reflex export lerobot/smolvla_base --target desktop --output ./sv
+  reflex serve ./sv --port 8000 --device cuda
+  curl -X POST http://localhost:8000/act ...
+
+Validates the entire user journey from `pip install` to first action.
+If this fails, the launch fails — fix before posting publicly.
+
+Usage:
+    modal run scripts/modal_verify_install_path.py
+"""
+
+import modal
+
+app = modal.App("reflex-install-path-verify")
+
+# CLEAN base image — no Reflex preinstalled, just python + git.
+# We're testing what a real user gets when they run the README pip command.
+image = (
+    modal.Image.from_registry(
+        "nvcr.io/nvidia/tensorrt:24.10-py3",
+        add_python="3.12",
+    )
+    .apt_install("git", "curl")
+    # NOTE: we do NOT pre-install reflex-vla. Test simulates a fresh box.
+)
+
+
+@app.function(image=image, gpu="A10G", timeout=900)
+def test_fresh_install():
+    import subprocess
+    import time
+
+    results = []
+
+    def step(name, cmd, timeout=300, check=True):
+        print(f"\n--- {name} ---", flush=True)
+        print(f"$ {cmd if isinstance(cmd, str) else ' '.join(cmd)}", flush=True)
+        t0 = time.time()
+        r = subprocess.run(
+            cmd, shell=isinstance(cmd, str), capture_output=True, text=True,
+            timeout=timeout,
+        )
+        elapsed = time.time() - t0
+        passed = (r.returncode == 0) if check else True
+        results.append({
+            "step": name, "exit_code": r.returncode, "elapsed_s": round(elapsed, 1),
+            "passed": passed,
+            "stdout_tail": r.stdout[-400:] if r.stdout else "",
+            "stderr_tail": r.stderr[-400:] if r.stderr else "",
+        })
+        if not passed:
+            print(f"  FAIL ({elapsed:.1f}s, exit {r.returncode})", flush=True)
+            print(f"  stderr: {r.stderr[-500:]}", flush=True)
+        else:
+            print(f"  OK ({elapsed:.1f}s)", flush=True)
+        return r
+
+    # Step 1: pip install with the EXACT README command
+    step(
+        "1. pip install reflex-vla[serve,gpu] from git",
+        "pip install 'reflex-vla[serve,gpu] @ git+https://github.com/rylinjames/reflex-vla'",
+        timeout=600,
+    )
+
+    # Step 2: reflex --help
+    step("2. reflex --help", ["reflex", "--help"], timeout=30)
+
+    # Step 3: reflex models
+    step("3. reflex models", ["reflex", "models"], timeout=30)
+
+    # Step 4: reflex export smolvla (smallest model for fastest test)
+    step(
+        "4. reflex export lerobot/smolvla_base",
+        ["reflex", "export", "lerobot/smolvla_base", "--target", "desktop",
+         "--output", "/tmp/sv"],
+        timeout=600,
+    )
+
+    # Step 5: verify export contents
+    import os
+    files = os.listdir("/tmp/sv") if os.path.exists("/tmp/sv") else []
+    results.append({
+        "step": "5. export contents",
+        "passed": "expert_stack.onnx" in files and "reflex_config.json" in files,
+        "elapsed_s": 0,
+        "exit_code": 0,
+        "stdout_tail": f"files: {files}",
+        "stderr_tail": "",
+    })
+    print(f"\n--- 5. verify export contents ---", flush=True)
+    print(f"  files: {files}", flush=True)
+
+    # Step 6: reflex serve in background, wait for /health, POST /act
+    print(f"\n--- 6. reflex serve + POST /act ---", flush=True)
+    serve_log = open("/tmp/serve.log", "wb")
+    serve = subprocess.Popen(
+        ["reflex", "serve", "/tmp/sv", "--port", "8765",
+         "--host", "127.0.0.1", "--device", "cuda"],
+        stdout=serve_log, stderr=subprocess.STDOUT,
+    )
+
+    import httpx
+    ready = False
+    t0 = time.time()
+    while time.time() - t0 < 90:
+        if serve.poll() is not None:
+            break
+        try:
+            r = httpx.get("http://127.0.0.1:8765/health", timeout=2.0)
+            if r.status_code == 200 and r.json().get("model_loaded"):
+                ready = True
+                break
+        except Exception:
+            pass
+        time.sleep(0.5)
+
+    act_ok = False
+    act_detail = ""
+    if ready:
+        try:
+            r = httpx.post(
+                "http://127.0.0.1:8765/act",
+                json={"instruction": "reach", "state": [0.0]*6},
+                timeout=30.0,
+            )
+            data = r.json()
+            actions = data.get("actions", [])
+            act_ok = len(actions) > 0
+            act_detail = (
+                f"{len(actions)} actions × {len(actions[0]) if actions else 0} dims, "
+                f"latency={data.get('latency_ms')}ms, mode={data.get('inference_mode')}"
+            )
+        except Exception as e:
+            act_detail = f"POST failed: {e}"
+
+    serve.terminate()
+    try:
+        serve.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        serve.kill()
+        serve.wait(timeout=5)
+    serve_log.close()
+
+    with open("/tmp/serve.log") as f:
+        serve_log_tail = f.read()[-1500:]
+
+    results.append({
+        "step": "6. serve + POST /act",
+        "passed": ready and act_ok,
+        "elapsed_s": 0,
+        "exit_code": serve.returncode,
+        "stdout_tail": f"ready={ready}, act_ok={act_ok}, detail={act_detail}\n\n--- server log ---\n{serve_log_tail}"[-1500:],
+        "stderr_tail": "",
+    })
+    print(f"  ready={ready}, act_ok={act_ok}", flush=True)
+    print(f"  detail: {act_detail}", flush=True)
+
+    # Verdict
+    print(f"\n{'='*70}", flush=True)
+    print("VERDICT — quickstart install path", flush=True)
+    print(f"{'='*70}", flush=True)
+    n_pass = sum(1 for r in results if r["passed"])
+    n_total = len(results)
+    for r in results:
+        status = "PASS" if r["passed"] else "FAIL"
+        elapsed = f"{r['elapsed_s']}s" if r["elapsed_s"] else ""
+        print(f"  [{status}] {r['step']:<50} {elapsed:>8}", flush=True)
+    print(f"\nOverall: {n_pass}/{n_total}", flush=True)
+    return {"passed": n_pass, "total": n_total, "results": results}
+
+
+@app.local_entrypoint()
+def main():
+    print("Verifying README quickstart install path on fresh box\n")
+    r = test_fresh_install.remote()
+    if r["passed"] < r["total"]:
+        print("\nFAILED steps:")
+        for s in r["results"]:
+            if not s["passed"]:
+                print(f"  - {s['step']}")
+                print(f"    stderr: {s.get('stderr_tail','')[-300:]}")
+                print(f"    stdout: {s.get('stdout_tail','')[-300:]}")
