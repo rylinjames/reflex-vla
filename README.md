@@ -36,13 +36,15 @@ curl -X POST http://localhost:8000/act -H 'content-type: application/json' \
 {
   "actions": [[...], [...], ...],   // 50 × action_dim chunk
   "num_actions": 50,
-  "latency_ms": 47.3,
+  "latency_ms": 11.9,                // smolvla on A10G, full 10-step denoise
   "denoising_steps": 10,
-  "inference_mode": "onnx_gpu"
+  "inference_mode": "onnx_trt_fp16"  // automatic — no engine flags needed
 }
 ```
 
 That's it. `reflex` auto-detects whether you gave it SmolVLA / pi0 / pi0.5 / GR00T and dispatches to the right exporter. No framework-specific flags.
+
+When `onnxruntime-gpu` ships with the TensorRT execution provider (it does in v1.20+), `reflex serve` uses TRT FP16 automatically and caches the engine in `<export_dir>/.trt_cache` so subsequent server starts skip the engine-build cost. The first `reflex serve` takes ~30-90s to warm up; restart is ~1-2s.
 
 ## Composable wedges
 
