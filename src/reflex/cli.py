@@ -103,6 +103,7 @@ def export(
     from reflex.checkpoint import load_checkpoint, detect_model_type
     from reflex.exporters.smolvla_exporter import export_smolvla
     from reflex.exporters.pi0_exporter import export_pi0, export_pi05
+    from reflex.exporters.gr00t_exporter import export_gr00t
 
     # Load once, detect, then pass state_dict to the exporter (avoids double-load)
     console.print("[dim]Loading checkpoint...[/dim]")
@@ -122,7 +123,9 @@ def export(
 
     import time
     start = time.perf_counter()
-    if model_type == "pi05":
+    if model_type == "gr00t":
+        result = export_gr00t(export_config, state_dict=state_dict)
+    elif model_type == "pi05":
         result = export_pi05(export_config, state_dict=state_dict)
     elif model_type == "pi0":
         result = export_pi0(export_config, state_dict=state_dict)
@@ -321,6 +324,7 @@ def models():
         "smolvla": "[green]✓ ONNX + validated[/green]",
         "pi0": "[green]✓ ONNX + validated[/green]",
         "pi05": "[green]✓ ONNX + AdaRMSNorm[/green]",
+        "gr00t": "[green]✓ DiT + AdaLN (v1 — needs Modal validation)[/green]",
     }
 
     for key, info in SUPPORTED_MODELS.items():

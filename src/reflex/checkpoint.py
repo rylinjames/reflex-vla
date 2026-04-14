@@ -23,6 +23,10 @@ PI0_EXPECTED_PREFIXES = [
     "paligemma_with_expert",
 ]
 
+GR00T_EXPECTED_PREFIXES = [
+    "action_head.model.transformer_blocks.",
+]
+
 PI05_MARKERS = [
     "input_layernorm.dense.weight",  # AdaRMSNorm — pi0.5 only
 ]
@@ -58,12 +62,25 @@ SUPPORTED_MODELS = {
         "action_chunk_size": 50,
         "action_dim": 32,
     },
+    "gr00t": {
+        "hf_id": "nvidia/GR00T-N1.6-3B",
+        "params_m": 3290,
+        "vision_encoder": "siglip2",
+        "backbone": "qwen3",
+        "action_head": "flow_matching_dit_adaln",
+        "num_denoising_steps": 4,
+        "action_chunk_size": 50,
+        "action_dim": 128,  # max_action_dim
+    },
 }
 
 
 def detect_model_type(state_dict: dict[str, torch.Tensor]) -> str | None:
     keys = set(state_dict.keys())
-    # pi0/pi0.5 check first (more specific)
+    # GR00T check first (most specific prefix)
+    if any(any(k.startswith(p) for k in keys) for p in GR00T_EXPECTED_PREFIXES):
+        return "gr00t"
+    # pi0 / pi0.5
     if any(any(k.startswith(p) for k in keys) for p in PI0_EXPECTED_PREFIXES):
         # Differentiate pi0 vs pi0.5 via AdaRMSNorm marker
         if any(any(marker in k for k in keys) for marker in PI05_MARKERS):
