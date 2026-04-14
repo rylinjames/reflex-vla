@@ -253,6 +253,20 @@ def serve(
     port: int = typer.Option(8000, help="Server port"),
     host: str = typer.Option("0.0.0.0", help="Server host"),
     device: str = typer.Option("cuda", help="Device: cuda or cpu"),
+    providers: str = typer.Option(
+        "",
+        help="Comma-separated ORT execution providers (e.g. "
+             "'CUDAExecutionProvider,CPUExecutionProvider'). Overrides --device "
+             "for provider selection when set.",
+    ),
+    no_strict_providers: bool = typer.Option(
+        False,
+        "--no-strict-providers",
+        help="Allow silent fallback to CPU if the requested GPU provider fails "
+             "to load. OFF by default — by default the server raises a loud "
+             "error instead of silently falling back. Set this only if you "
+             "explicitly want best-effort fallback.",
+    ),
     verbose: bool = typer.Option(False, help="Verbose logging"),
 ):
     """Start a VLA inference server. POST /act with image + instruction → actions."""
@@ -269,10 +283,51 @@ def serve(
         console.print(f"[red]No ONNX files found in {export_dir}[/red]")
         raise typer.Exit(1)
 
+    # Parse providers
+    provider_list: list[str] | None = None
+    if providers:
+        provider_list = [p.strip() for p in providers.split(",") if p.strip()]
+
+    # Detect the common "I pip installed onnxruntime instead of onnxruntime-gpu"
+    # footgun before we spin up the server.
+    try:
+        import onnxruntime as ort
+        available = ort.get_available_providers()
+    except ImportError:
+        console.print(
+            "[red]onnxruntime is not installed.[/red]\n"
+            "For GPU: [cyan]pip install onnxruntime-gpu[/cyan]\n"
+            "For CPU: [cyan]pip install onnxruntime[/cyan]"
+        )
+        raise typer.Exit(1)
+
+    cuda_requested = (
+        device == "cuda"
+        or (provider_list and "CUDAExecutionProvider" in provider_list)
+    )
+    cuda_available_in_ort = "CUDAExecutionProvider" in available
+
     console.print(f"\n[bold]Reflex Serve[/bold]")
     console.print(f"  Export:  {export_dir}")
     console.print(f"  Device:  {device}")
+    if provider_list:
+        console.print(f"  Providers: {provider_list}")
+    console.print(f"  Strict:  {not no_strict_providers}")
     console.print(f"  Server:  http://{host}:{port}")
+    console.print(f"  [dim]ORT available providers: {available}[/dim]")
+
+    if cuda_requested and not cuda_available_in_ort:
+        console.print(
+            "\n[red]⚠ CUDAExecutionProvider not available in this ORT install.[/red]\n"
+            "  Likely cause: you installed `onnxruntime` (CPU-only).\n"
+            "  Fix:   [cyan]pip uninstall onnxruntime && pip install onnxruntime-gpu[/cyan]\n"
+            "  Also:  ORT 1.20+ requires CUDA 12.x + cuDNN 9.x on the library path.\n"
+            "  Or:    pass [cyan]--device cpu[/cyan] to explicitly use CPU.\n"
+            "  Or:    pass [cyan]--no-strict-providers[/cyan] to allow CPU fallback anyway.\n"
+        )
+        if not no_strict_providers:
+            raise typer.Exit(1)
+
     console.print()
     console.print(f"  [dim]Endpoints:[/dim]")
     console.print(f"  [cyan]POST /act[/cyan]     — send image + instruction, get actions")
@@ -287,7 +342,12 @@ def serve(
         console.print("[red]Install serve dependencies: pip install 'reflex-vla[serve]'[/red]")
         raise typer.Exit(1)
 
-    app_instance = create_app(export_dir, device=device)
+    app_instance = create_app(
+        export_dir,
+        device=device,
+        providers=provider_list,
+        strict_providers=not no_strict_providers,
+    )
     console.print("[bold green]Starting server...[/bold green]")
     uvicorn.run(app_instance, host=host, port=port, log_level="info" if verbose else "warning")
 

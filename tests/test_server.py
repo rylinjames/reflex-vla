@@ -100,3 +100,108 @@ class TestCreateApp:
             assert app.title == "Reflex VLA Server"
         except ImportError:
             pytest.skip("fastapi not installed")
+
+
+class TestStrictProviderMode:
+    """Phase I.1: silent CPU fallback is now a hard error by default.
+
+    The Apr 14 benchmark showed we had been publishing "GPU" numbers that
+    were actually ORT CPU execution due to a CUDA-12-vs-13 library mismatch.
+    These tests codify the new contract: asking for CUDA and not getting it
+    raises, rather than silently degrading.
+    """
+
+    def test_strict_raises_when_cuda_requested_but_unavailable(
+        self, mock_export_dir, tmp_path
+    ):
+        # Drop a dummy ONNX file so _load_onnx actually runs
+        (tmp_path / "expert_stack.onnx").write_bytes(b"\x08\x07")  # ONNX magic stub
+
+        server = ReflexServer(
+            mock_export_dir, device="cuda", strict_providers=True,
+        )
+
+        # Mock ORT to return a session whose active providers is CPU-only
+        mock_session = MagicMock()
+        mock_session.get_providers.return_value = ["CPUExecutionProvider"]
+        mock_ort = MagicMock()
+        mock_ort.InferenceSession.return_value = mock_session
+        mock_ort.get_available_providers.return_value = ["CPUExecutionProvider"]
+
+        with patch.dict("sys.modules", {"onnxruntime": mock_ort}):
+            with pytest.raises(RuntimeError, match="fell back to CPU"):
+                server._load_onnx(tmp_path / "expert_stack.onnx")
+
+    def test_non_strict_allows_fallback(self, mock_export_dir, tmp_path):
+        (tmp_path / "expert_stack.onnx").write_bytes(b"\x08\x07")
+        server = ReflexServer(
+            mock_export_dir, device="cuda", strict_providers=False,
+        )
+        mock_session = MagicMock()
+        mock_session.get_providers.return_value = ["CPUExecutionProvider"]
+        mock_ort = MagicMock()
+        mock_ort.InferenceSession.return_value = mock_session
+        mock_ort.get_available_providers.return_value = ["CPUExecutionProvider"]
+
+        with patch.dict("sys.modules", {"onnxruntime": mock_ort}):
+            # Should NOT raise
+            server._load_onnx(tmp_path / "expert_stack.onnx")
+            assert server._inference_mode == "onnx_cpu"
+
+    def test_strict_accepts_when_cuda_active(self, mock_export_dir, tmp_path):
+        (tmp_path / "expert_stack.onnx").write_bytes(b"\x08\x07")
+        server = ReflexServer(
+            mock_export_dir, device="cuda", strict_providers=True,
+        )
+        mock_session = MagicMock()
+        mock_session.get_providers.return_value = [
+            "CUDAExecutionProvider", "CPUExecutionProvider",
+        ]
+        mock_ort = MagicMock()
+        mock_ort.InferenceSession.return_value = mock_session
+        mock_ort.get_available_providers.return_value = [
+            "CUDAExecutionProvider", "CPUExecutionProvider",
+        ]
+
+        with patch.dict("sys.modules", {"onnxruntime": mock_ort}):
+            server._load_onnx(tmp_path / "expert_stack.onnx")
+            assert server._inference_mode == "onnx_gpu"
+
+    def test_explicit_cpu_device_skips_strict_check(
+        self, mock_export_dir, tmp_path
+    ):
+        (tmp_path / "expert_stack.onnx").write_bytes(b"\x08\x07")
+        server = ReflexServer(
+            mock_export_dir, device="cpu", strict_providers=True,
+        )
+        mock_session = MagicMock()
+        mock_session.get_providers.return_value = ["CPUExecutionProvider"]
+        mock_ort = MagicMock()
+        mock_ort.InferenceSession.return_value = mock_session
+        mock_ort.get_available_providers.return_value = ["CPUExecutionProvider"]
+
+        with patch.dict("sys.modules", {"onnxruntime": mock_ort}):
+            server._load_onnx(tmp_path / "expert_stack.onnx")
+            assert server._inference_mode == "onnx_cpu"
+
+    def test_explicit_providers_list_overrides_device(
+        self, mock_export_dir, tmp_path
+    ):
+        (tmp_path / "expert_stack.onnx").write_bytes(b"\x08\x07")
+        # device=cpu but explicit CUDAExecutionProvider in list
+        server = ReflexServer(
+            mock_export_dir,
+            device="cpu",
+            providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+            strict_providers=True,
+        )
+        mock_session = MagicMock()
+        mock_session.get_providers.return_value = ["CPUExecutionProvider"]
+        mock_ort = MagicMock()
+        mock_ort.InferenceSession.return_value = mock_session
+        mock_ort.get_available_providers.return_value = ["CPUExecutionProvider"]
+
+        with patch.dict("sys.modules", {"onnxruntime": mock_ort}):
+            # CUDAExecutionProvider is in providers list → strict should fire
+            with pytest.raises(RuntimeError, match="fell back to CPU"):
+                server._load_onnx(tmp_path / "expert_stack.onnx")

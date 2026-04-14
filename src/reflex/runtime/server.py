@@ -42,10 +42,29 @@ class ReflexServer:
         export_dir: str | Path,
         device: str = "cuda",
         num_denoising_steps: int = 10,
+        providers: list[str] | None = None,
+        strict_providers: bool = True,
     ):
+        """Create the server.
+
+        Args:
+            export_dir: directory with exported ONNX + reflex_config.json
+            device: "cuda" or "cpu" — selects default ONNX execution provider
+            num_denoising_steps: Euler flow matching steps per inference
+            providers: explicit list of ORT execution providers to request, e.g.
+                ["CUDAExecutionProvider", "CPUExecutionProvider"]. If omitted,
+                derived from `device`. Useful for explicit control in production.
+            strict_providers: if True (default), raise a loud RuntimeError when
+                the requested provider fails to load instead of silently falling
+                back to CPU. Set False only if you explicitly want best-effort
+                fallback (almost always wrong for GPU deployments).
+        """
         self.export_dir = Path(export_dir)
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
         self.num_denoising_steps = num_denoising_steps
+        self._requested_device = device
+        self._requested_providers = providers
+        self._strict_providers = strict_providers
         self.config = self._load_config()
         self.model = None
         self._ready = False
@@ -79,20 +98,65 @@ class ReflexServer:
         logger.info("Model loaded in %.1fs, ready to serve", elapsed)
 
     def _load_onnx(self, onnx_path: Path) -> None:
-        """Load ONNX model via onnxruntime."""
+        """Load ONNX model via onnxruntime.
+
+        Honors `self._requested_device` and `self._requested_providers`. Raises
+        if the requested provider fails to load AND `self._strict_providers` is
+        set (the default). Silent CPU fallback was causing users to publish
+        "GPU" benchmarks that were actually CPU — Apr 14 post-mortem. Never
+        again.
+        """
         try:
             import onnxruntime as ort
+        except ImportError as e:
+            raise ImportError(
+                "onnxruntime is not installed. For GPU inference, install "
+                "`onnxruntime-gpu` (not `onnxruntime`). For CPU only, "
+                "install `onnxruntime`."
+            ) from e
 
+        # Decide which providers to request
+        if self._requested_providers is not None:
+            providers = list(self._requested_providers)
+        elif self._requested_device == "cuda":
             providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-            self._ort_session = ort.InferenceSession(str(onnx_path), providers=providers)
-            self._inference_mode = "onnx"
-            logger.info("Loaded ONNX model: %s (%s)", onnx_path.name, self._ort_session.get_providers())
-        except ImportError:
-            logger.warning("onnxruntime not installed, falling back to CPU-only")
-            import onnxruntime as ort
+        else:
+            providers = ["CPUExecutionProvider"]
 
-            self._ort_session = ort.InferenceSession(str(onnx_path))
-            self._inference_mode = "onnx_cpu"
+        # What the installed ORT actually supports on this machine
+        available = set(ort.get_available_providers())
+        logger.info("Requested providers: %s; available: %s", providers, sorted(available))
+
+        # Create session
+        self._ort_session = ort.InferenceSession(str(onnx_path), providers=providers)
+        active = self._ort_session.get_providers()
+        logger.info("Loaded ONNX model: %s — active providers: %s", onnx_path.name, active)
+
+        # Strict check: if caller asked for CUDA but we ended up on CPU, fail loudly.
+        cuda_requested = "CUDAExecutionProvider" in providers
+        cuda_active = "CUDAExecutionProvider" in active
+        if cuda_requested and not cuda_active and self._strict_providers:
+            install_hint = ""
+            if "CUDAExecutionProvider" not in available:
+                install_hint = (
+                    "\n\nCUDAExecutionProvider is not available in this ORT install. "
+                    "Likely causes:\n"
+                    "  - You installed `onnxruntime` (CPU-only). Replace it with:\n"
+                    "      pip uninstall onnxruntime && pip install onnxruntime-gpu\n"
+                    "  - CUDA 12 + cuDNN 9 libraries are not on the library path. "
+                    "ORT 1.20+ requires CUDA 12.x and cuDNN 9.x. "
+                    "See https://onnxruntime.ai/docs/execution-providers/CUDA-ExecutionProvider.html#requirements\n"
+                    "  - You are on a machine without an NVIDIA GPU."
+                )
+            raise RuntimeError(
+                f"reflex serve was started with --device cuda (or CUDAExecutionProvider "
+                f"in --providers) but ONNX Runtime fell back to CPU. "
+                f"Active providers: {active}. "
+                f"Refusing to continue under strict mode — use --no-strict-providers or "
+                f"--device cpu to explicitly request CPU execution.{install_hint}"
+            )
+
+        self._inference_mode = "onnx_gpu" if cuda_active else "onnx_cpu"
 
     @property
     def ready(self) -> bool:
@@ -201,7 +265,12 @@ except ImportError:
     HealthResponse = None  # type: ignore
 
 
-def create_app(export_dir: str, device: str = "cuda") -> Any:
+def create_app(
+    export_dir: str,
+    device: str = "cuda",
+    providers: list[str] | None = None,
+    strict_providers: bool = True,
+) -> Any:
     """Create a FastAPI app for serving VLA predictions."""
     try:
         from contextlib import asynccontextmanager
@@ -210,7 +279,12 @@ def create_app(export_dir: str, device: str = "cuda") -> Any:
     except ImportError:
         raise ImportError("Install fastapi: pip install 'reflex-vla[serve]'")
 
-    server = ReflexServer(export_dir, device=device)
+    server = ReflexServer(
+        export_dir,
+        device=device,
+        providers=providers,
+        strict_providers=strict_providers,
+    )
 
     @asynccontextmanager
     async def lifespan(app):
