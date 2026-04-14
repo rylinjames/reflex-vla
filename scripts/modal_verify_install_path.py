@@ -103,15 +103,31 @@ def test_fresh_install():
         stdout=serve_log, stderr=subprocess.STDOUT,
     )
 
-    import httpx
+    # Use stdlib urllib so we don't depend on a pip-installed test client
+    # (the whole point of this test is to verify what users get with the
+    # advertised install path).
+    import json as _json
+    import urllib.request
+
+    def _get_json(url, timeout=2.0):
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, _json.loads(resp.read().decode())
+
+    def _post_json(url, payload, timeout=30.0):
+        data = _json.dumps(payload).encode()
+        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, _json.loads(resp.read().decode())
+
     ready = False
     t0 = time.time()
     while time.time() - t0 < 90:
         if serve.poll() is not None:
             break
         try:
-            r = httpx.get("http://127.0.0.1:8765/health", timeout=2.0)
-            if r.status_code == 200 and r.json().get("model_loaded"):
+            status, body = _get_json("http://127.0.0.1:8765/health", timeout=2.0)
+            if status == 200 and body.get("model_loaded"):
                 ready = True
                 break
         except Exception:
@@ -122,12 +138,11 @@ def test_fresh_install():
     act_detail = ""
     if ready:
         try:
-            r = httpx.post(
+            _, data = _post_json(
                 "http://127.0.0.1:8765/act",
-                json={"instruction": "reach", "state": [0.0]*6},
+                {"instruction": "reach", "state": [0.0]*6},
                 timeout=30.0,
             )
-            data = r.json()
             actions = data.get("actions", [])
             act_ok = len(actions) > 0
             act_detail = (
