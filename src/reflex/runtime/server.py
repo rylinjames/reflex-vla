@@ -203,16 +203,37 @@ class ReflexServer:
                 "install `onnxruntime`."
             ) from e
 
+        # What the installed ORT actually supports on this machine
+        available = set(ort.get_available_providers())
+
         # Decide which providers to request
         if self._requested_providers is not None:
             providers = list(self._requested_providers)
         elif self._requested_device == "cuda":
-            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            providers = []
+            # Prefer TensorRT EP when available — gives FP16 kernels and
+            # engine caching transparently. ORT falls back to CUDA EP for
+            # ops the TRT EP doesn't support.
+            if "TensorrtExecutionProvider" in available:
+                # Use a per-export-dir engine cache so subsequent serve calls
+                # skip the engine-build cost.
+                trt_cache = str(self.export_dir / ".trt_cache")
+                Path(trt_cache).mkdir(parents=True, exist_ok=True)
+                providers.append((
+                    "TensorrtExecutionProvider",
+                    {
+                        "device_id": 0,
+                        "trt_fp16_enable": True,
+                        "trt_engine_cache_enable": True,
+                        "trt_engine_cache_path": trt_cache,
+                        "trt_max_workspace_size": 4 * 1024 * 1024 * 1024,  # 4GB
+                    },
+                ))
+            providers.append("CUDAExecutionProvider")
+            providers.append("CPUExecutionProvider")
         else:
             providers = ["CPUExecutionProvider"]
 
-        # What the installed ORT actually supports on this machine
-        available = set(ort.get_available_providers())
         logger.info("Requested providers: %s; available: %s", providers, sorted(available))
 
         # Create session
@@ -220,9 +241,14 @@ class ReflexServer:
         active = self._ort_session.get_providers()
         logger.info("Loaded ONNX model: %s — active providers: %s", onnx_path.name, active)
 
-        # Strict check: if caller asked for CUDA but we ended up on CPU, fail loudly.
-        cuda_requested = "CUDAExecutionProvider" in providers
-        cuda_active = "CUDAExecutionProvider" in active
+        # Strict check: if caller asked for any GPU provider (CUDA or TRT) but
+        # we ended up on CPU, fail loudly.
+        def _provider_name(p):
+            return p[0] if isinstance(p, tuple) else p
+
+        gpu_provider_names = {"CUDAExecutionProvider", "TensorrtExecutionProvider"}
+        cuda_requested = any(_provider_name(p) in gpu_provider_names for p in providers)
+        cuda_active = any(p in gpu_provider_names for p in active)
         if cuda_requested and not cuda_active and self._strict_providers:
             install_hint = ""
             if "CUDAExecutionProvider" not in available:
@@ -244,7 +270,13 @@ class ReflexServer:
                 f"--device cpu to explicitly request CPU execution.{install_hint}"
             )
 
-        self._inference_mode = "onnx_gpu" if cuda_active else "onnx_cpu"
+        # Tag the inference mode so /act responses report which path was used
+        if "TensorrtExecutionProvider" in active:
+            self._inference_mode = "onnx_trt_fp16"
+        elif cuda_active:
+            self._inference_mode = "onnx_gpu"
+        else:
+            self._inference_mode = "onnx_cpu"
 
     @property
     def ready(self) -> bool:
