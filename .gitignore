@@ -1,1 +1,14 @@
-.venv/\n__pycache__/\n*.egg-info/\n*.pyc\ndist/\nbuild/\n.pytest_cache/
+.venv/
+__pycache__/
+*.egg-info/
+*.pyc
+dist/
+build/
+.pytest_cache/
+.modal_cache/
+*.onnx
+*.onnx.data
+*.trt
+*.engine
+reflex_export/
+**/reflex_export/

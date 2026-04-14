@@ -96,8 +96,16 @@ def export(
         console.print("\n[green]Dry run complete. Export should work.[/green]")
         raise typer.Exit()
 
-    # Full export
+    # Full export — auto-dispatch to the right exporter based on model type
+    from reflex.checkpoint import load_checkpoint, detect_model_type
     from reflex.exporters.smolvla_exporter import export_smolvla
+    from reflex.exporters.pi0_exporter import export_pi0
+
+    # Load once, detect, then pass state_dict to the exporter (avoids double-load)
+    console.print("[dim]Loading checkpoint...[/dim]")
+    state_dict, _ = load_checkpoint(model)
+    model_type = detect_model_type(state_dict) or "smolvla"
+    console.print(f"  Detected: [bold]{model_type}[/bold]")
 
     export_config = ExportConfig(
         model_id=model,
@@ -111,7 +119,10 @@ def export(
 
     import time
     start = time.perf_counter()
-    result = export_smolvla(export_config)
+    if model_type in ("pi0", "pi05"):
+        result = export_pi0(export_config, state_dict=state_dict)
+    else:
+        result = export_smolvla(export_config, state_dict=state_dict)
     elapsed = time.perf_counter() - start
 
     # Print results

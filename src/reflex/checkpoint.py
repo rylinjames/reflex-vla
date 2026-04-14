@@ -16,6 +16,15 @@ SMOLVLA_EXPECTED_PREFIXES = [
     "model.vision_encoder",
     "model.language_model",
     "model.action_expert",
+    "model.vlm_with_expert",
+]
+
+PI0_EXPECTED_PREFIXES = [
+    "paligemma_with_expert",
+]
+
+PI05_MARKERS = [
+    "input_layernorm.dense.weight",  # AdaRMSNorm — pi0.5 only
 ]
 
 SUPPORTED_MODELS = {
@@ -29,14 +38,40 @@ SUPPORTED_MODELS = {
         "action_chunk_size": 50,
         "action_dim": 6,
     },
+    "pi0": {
+        "hf_id": "lerobot/pi0_base",
+        "params_m": 3500,
+        "vision_encoder": "siglip",
+        "backbone": "paligemma_gemma2b",
+        "action_head": "flow_matching",
+        "num_denoising_steps": 10,
+        "action_chunk_size": 50,
+        "action_dim": 32,  # max_action_dim
+    },
+    "pi05": {
+        "hf_id": "lerobot/pi05_base",
+        "params_m": 3620,
+        "vision_encoder": "siglip",
+        "backbone": "paligemma_gemma2b",
+        "action_head": "flow_matching_adarms",
+        "num_denoising_steps": 10,
+        "action_chunk_size": 50,
+        "action_dim": 32,
+    },
 }
 
 
 def detect_model_type(state_dict: dict[str, torch.Tensor]) -> str | None:
     keys = set(state_dict.keys())
-    for prefix in SMOLVLA_EXPECTED_PREFIXES:
-        if any(k.startswith(prefix) for k in keys):
-            return "smolvla"
+    # pi0/pi0.5 check first (more specific)
+    if any(any(k.startswith(p) for k in keys) for p in PI0_EXPECTED_PREFIXES):
+        # Differentiate pi0 vs pi0.5 via AdaRMSNorm marker
+        if any(any(marker in k for k in keys) for marker in PI05_MARKERS):
+            return "pi05"
+        return "pi0"
+    # SmolVLA
+    if any(any(k.startswith(p) for k in keys) for p in SMOLVLA_EXPECTED_PREFIXES):
+        return "smolvla"
     return None
 
 

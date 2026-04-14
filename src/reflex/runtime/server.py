@@ -182,22 +182,8 @@ class ReflexServer:
         return self.predict(image=image, instruction=instruction, state=state)
 
 
-def create_app(export_dir: str, device: str = "cuda") -> Any:
-    """Create a FastAPI app for serving VLA predictions."""
-    try:
-        from fastapi import FastAPI
-        from fastapi.responses import JSONResponse
-        from pydantic import BaseModel
-    except ImportError:
-        raise ImportError("Install fastapi: pip install 'reflex-vla[serve]'")
-
-    app = FastAPI(
-        title="Reflex VLA Server",
-        description="Deploy any VLA model to any edge hardware.",
-        version="0.1.0",
-    )
-
-    server = ReflexServer(export_dir, device=device)
+try:
+    from pydantic import BaseModel
 
     class PredictRequest(BaseModel):
         image: str | None = None  # base64 encoded
@@ -210,12 +196,36 @@ def create_app(export_dir: str, device: str = "cuda") -> Any:
         inference_mode: str = ""
         export_dir: str = ""
 
-    @app.on_event("startup")
-    async def startup():
-        server.load()
+except ImportError:
+    PredictRequest = None  # type: ignore
+    HealthResponse = None  # type: ignore
 
-    @app.get("/health")
-    async def health() -> HealthResponse:
+
+def create_app(export_dir: str, device: str = "cuda") -> Any:
+    """Create a FastAPI app for serving VLA predictions."""
+    try:
+        from contextlib import asynccontextmanager
+        from fastapi import FastAPI
+        from fastapi.responses import JSONResponse
+    except ImportError:
+        raise ImportError("Install fastapi: pip install 'reflex-vla[serve]'")
+
+    server = ReflexServer(export_dir, device=device)
+
+    @asynccontextmanager
+    async def lifespan(app):
+        server.load()
+        yield
+
+    app = FastAPI(
+        title="Reflex VLA Server",
+        description="Deploy any VLA model to any edge hardware.",
+        version="0.1.0",
+        lifespan=lifespan,
+    )
+
+    @app.get("/health", response_model=HealthResponse)
+    async def health():
         return HealthResponse(
             status="ok" if server.ready else "not_ready",
             model_loaded=server.ready,
@@ -224,7 +234,7 @@ def create_app(export_dir: str, device: str = "cuda") -> Any:
         )
 
     @app.post("/act")
-    async def act(request: PredictRequest) -> JSONResponse:
+    async def act(request: PredictRequest):
         result = server.predict_from_base64(
             image_b64=request.image,
             instruction=request.instruction,

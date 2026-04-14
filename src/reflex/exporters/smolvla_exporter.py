@@ -126,7 +126,11 @@ class ExpertStack(nn.Module):
         t_emb = t_emb.unsqueeze(1).expand(-1, c, -1)
         x = self.action_time_mlp_out(F.silu(self.action_time_mlp_in(torch.cat([act, t_emb], dim=-1))))
 
-        dummy_kv = torch.zeros(b, 1, self.vlm_kv_dim, device=x.device, dtype=x.dtype)
+        # Only allocate cross-attn KV placeholder when cross-attn layers exist
+        dummy_kv = None
+        if self.cross_indices and self.vlm_kv_dim > 0:
+            dummy_kv = torch.zeros(b, 1, self.vlm_kv_dim, device=x.device, dtype=x.dtype)
+
         for i, layer in enumerate(self.layers):
             if i in self.cross_indices:
                 x = layer(x, position_ids, cross_kv=dummy_kv)
@@ -230,16 +234,25 @@ def build_expert_stack(state_dict: dict[str, torch.Tensor], head_dim: int) -> tu
     return stack, metadata
 
 
-def export_smolvla(config: ExportConfig) -> dict[str, Any]:
-    """Full SmolVLA export pipeline."""
+def export_smolvla(
+    config: ExportConfig,
+    state_dict: dict[str, torch.Tensor] | None = None,
+) -> dict[str, Any]:
+    """Full SmolVLA export pipeline.
+
+    Args:
+        config: export config
+        state_dict: optionally pre-loaded state dict (avoids re-downloading)
+    """
     output_dir = Path(config.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     hardware = get_hardware_profile(config.target)
     result = {"status": "ok", "files": {}, "metadata": {}}
 
-    # 1. Load checkpoint
-    logger.info("Loading checkpoint: %s", config.model_id)
-    state_dict, model_config = load_checkpoint(config.model_id)
+    # 1. Load checkpoint (if not provided)
+    if state_dict is None:
+        logger.info("Loading checkpoint: %s", config.model_id)
+        state_dict, model_config = load_checkpoint(config.model_id)
     total_params = sum(v.numel() for v in state_dict.values())
     logger.info("Loaded %d tensors, %.1fM params", len(state_dict), total_params / 1e6)
 
