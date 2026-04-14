@@ -18,16 +18,20 @@ import modal
 app = modal.App("reflex-batching-real")
 
 image = (
-    modal.Image.debian_slim(python_version="3.12")
+    # Use NVIDIA's TRT container so cuDNN 9 (including libcudnn_adv) is
+    # already on the system path. The pip-installed nvidia-cudnn-cu12
+    # wheel is missing libcudnn_adv.so.9 which ORT 1.20+ requires.
+    modal.Image.from_registry(
+        "nvcr.io/nvidia/tensorrt:24.10-py3",
+        add_python="3.12",
+    )
     .apt_install("git")
     .pip_install(
         "torch==2.5.1",
         "safetensors", "huggingface_hub",
         "transformers>=4.40,<5.0",
         "onnx", "onnxscript",
-        "onnxruntime-gpu==1.20.1",
-        "nvidia-cudnn-cu12>=9.0,<10.0",
-        "nvidia-cublas-cu12>=12.0,<13.0",
+        "onnxruntime-gpu>=1.20,<1.24",
         "numpy<2.0", "Pillow",
         "typer", "rich", "pydantic>=2.0", "pyyaml",
         "fastapi", "uvicorn", "httpx",
