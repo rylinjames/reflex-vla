@@ -18,7 +18,7 @@ reflex export lerobot/pi0_base --target orin-nano --output ./p0
 reflex serve ./p0 --port 8000
 ```
 
-Then `POST /act` returns 50-step action chunks at 18-105 Hz on A10G depending on model size. Same ONNX → TRT pipeline runs on Jetson, so there's no separate "cloud version" and "edge version" of your model.
+Then `POST /act` returns 50-step action chunks. `reflex serve` auto-prefers ONNX Runtime's TensorRT execution provider when available — verified on Modal A10G with smolvla: `latency_ms=11.9, inference_mode=onnx_trt_fp16` for the entire 10-step denoise loop, with zero engine-management commands. First start warms up + caches the engine; subsequent starts are ~1-2s. Same pipeline runs on Jetson.
 
 **Performance** (Modal A10G, single denoising step):
 

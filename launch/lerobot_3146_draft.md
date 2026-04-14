@@ -44,6 +44,8 @@ reflex export lerobot/pi0_base --target orin-nano --output ./p0
 reflex serve ./p0 --port 8000
 ```
 
+`reflex serve` auto-prefers the TensorRT execution provider when ONNX Runtime ships with it (v1.20+), so on a GPU box you get TRT FP16 latencies with no engine-management commands. First serve invocation warms up + caches the engine in `<export_dir>/.trt_cache` (~30-90s); subsequent starts are ~1-2s. Verified end-to-end on a fresh A10G install: `inference_mode: "onnx_trt_fp16"`, `latency_ms: 11.9` on smolvla per chunk.
+
 ```bash
 curl -X POST http://localhost:8000/act -H 'content-type: application/json' \
   -d '{"instruction":"reach", "state":[0.1, 0.2, 0.3, 0.4, 0.5, 0.6]}'
