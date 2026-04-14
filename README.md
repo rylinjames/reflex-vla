@@ -127,6 +127,19 @@ Per-chunk (10 denoising steps):
 
 All four sit comfortably above the 20-30 Hz needed for real-time robot control on A10G. Real Jetson Orin Nano numbers landing in a follow-up.
 
+### Multi-robot batching (`reflex serve --max-batch N`)
+
+pi0 on A10G, 32 concurrent /act requests:
+
+| `--max-batch` | Throughput | Wall-clock to serve 32 reqs | Speedup |
+|---|---|---|---|
+| 1 (baseline, serial) | 17.1 qps | 1.87s | 1.00× |
+| 4 | 40.0 qps | 0.80s | **2.34×** |
+| 8 | 46.6 qps | 0.69s | **2.73×** |
+| 16 | 49.3 qps | 0.65s | **2.88×** |
+
+Continuous batching on the HTTP layer — each `/act` request enters an asyncio queue, the server flushes the queue every `--batch-timeout-ms` (default 5ms) into one batched ONNX inference. Throughput scales 2.3-2.9× at batch sizes 4-16, and per-request latency *drops* because requests no longer serialize through the model.
+
 Methodology + raw data: [vla_to_hardware_roadmap/phase_1_vla_software/deployment_export](https://github.com/rylinjames/vla_to_hardware_roadmap/blob/main/phase_1_vla_software/deployment_export/build_candidates.md). Reproduce via `modal run scripts/modal_bench_trt_fp16.py`.
 
 ## License
