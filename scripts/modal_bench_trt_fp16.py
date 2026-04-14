@@ -270,9 +270,9 @@ def bench_trt():
                             break
                     parsed = {}
                     for key in ("min", "max", "mean", "median", "percentile(99%)"):
-                        m = re.search(rf"{re.escape(key)}\s*=\s*([0-9.]+)\s*ms", gpu_line)
-                        if m:
-                            parsed[key] = float(m.group(1))
+                        match = re.search(rf"{re.escape(key)}\s*=\s*([0-9.]+)\s*ms", gpu_line)
+                        if match:
+                            parsed[key] = float(match.group(1))
                     trt_stats = {
                         "mean_ms": parsed.get("mean"),
                         "p50_ms": parsed.get("median"),
