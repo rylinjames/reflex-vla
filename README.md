@@ -60,13 +60,12 @@ Full E2E (export → serve → POST /act) tested on Modal A100, ONNX Runtime CPU
 | SmolVLA | 100M | 50s | 3.3e-06 | 417ms | 2.4 |
 | pi0 | 314M | 103s | 5.2e-08 | 968ms | 1.0 |
 | pi0.5 | 427M | 106s | 2.2e-06 | 1036ms | 1.0 |
-| GR00T N1.6 | 1091M | 111s | 3.5e-05 | export only | — |
+| GR00T N1.6 | 1091M | 81s | 3.8e-06 | 2352ms | 0.4 |
 
-GR00T's expert emits velocity in a different dim (1024) than its input
-tokens (1536), so the simple SmolVLA-style denoising loop in `reflex
-serve` can't run it directly. A GR00T-aware serve path needs the
-embodiment-specific `action_decoder` (planned for v0.3). Expert ONNX
-export already works and validates end-to-end.
+All four flow-matching VLAs now run end-to-end in `reflex serve`.
+GR00T's wrapper includes the per-embodiment `action_encoder` and
+`action_decoder` (pinned to embodiment_id=0 by default), so the
+denoise loop closes: raw actions in, raw actions out.
 
 GPU provider and TensorRT builds (on Jetson) expected to push
 latencies 5-10x faster. Benchmark latencies shown are CPU-provider
