@@ -158,7 +158,7 @@ def export(
         console.print(f"  Expert: {meta['num_layers']} layers, {meta['total_params_m']:.1f}M params")
 
     console.print(f"\n  [dim]Run on target hardware:[/dim]")
-    console.print(f"  [cyan]reflex benchmark {output}[/cyan]")
+    console.print(f"  [cyan]reflex bench {output}[/cyan]")
 
 
 @app.command()
@@ -175,7 +175,7 @@ def validate(
     console.print(f"  Threshold: {threshold}")
 
 
-@app.command(name="benchmark")
+@app.command(name="bench")
 def benchmark_cmd(
     export_dir: str = typer.Argument(help="Path to exported model directory"),
     iterations: int = typer.Option(100, help="Number of benchmark iterations"),
