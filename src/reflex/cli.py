@@ -347,5 +347,183 @@ def models():
     console.print("\n[dim]Usage:[/dim] [cyan]reflex export <hf_id>[/cyan] — auto-detects model type.")
 
 
+@app.command()
+def turbo(
+    strategy: str = typer.Option("adaptive", help="Strategy: fixed, adaptive, cuda_graph"),
+    action_dim: int = typer.Option(6, help="Action dimension to benchmark"),
+    chunk_size: int = typer.Option(10, help="Action chunk size"),
+    trials: int = typer.Option(5, help="Number of benchmark trials"),
+    verbose: bool = typer.Option(False, help="Verbose logging"),
+):
+    """Benchmark action-head denoising optimizations (Wedge 4).
+
+    Compares fixed-step vs adaptive denoising on a synthetic model to show
+    the latency headroom that flow-matching VLAs have.
+    """
+    _setup_logging(verbose)
+    from reflex.kernels.turbo import TurboOptimizer, TurboConfig
+    import torch
+    import torch.nn as nn
+
+    class _DummyModel(nn.Module):
+        def __init__(self, action_dim=6, hidden=64):
+            super().__init__()
+            self.net = nn.Sequential(
+                nn.Linear(action_dim + 1 + hidden, hidden),
+                nn.ReLU(),
+                nn.Linear(hidden, action_dim),
+            )
+            self.pos_embed = nn.Embedding(100, hidden)
+
+        def forward(self, noisy, timestep, pos_ids):
+            b, c, _ = noisy.shape
+            pos = self.pos_embed(pos_ids)
+            t = timestep.unsqueeze(1).unsqueeze(2).expand(b, c, 1)
+            return self.net(torch.cat([noisy, t, pos], dim=-1))
+
+    console.print(f"\n[bold]Reflex Turbo[/bold]")
+    console.print(f"  Strategy: {strategy}")
+    console.print(f"  action_dim={action_dim}, chunk_size={chunk_size}, trials={trials}")
+
+    model = _DummyModel(action_dim=action_dim, hidden=16)
+    optimizer = TurboOptimizer(TurboConfig(strategy=strategy))
+    results = optimizer.benchmark_strategies(
+        model, action_dim=action_dim, chunk_size=chunk_size, device="cpu", n_trials=trials,
+    )
+
+    table = Table(title="Turbo Benchmark")
+    table.add_column("Strategy", style="cyan")
+    table.add_column("Mean ms")
+    table.add_column("Steps used")
+    table.add_column("Converged early")
+    for name, runs in results.items():
+        mean_ms = sum(r.latency_ms for r in runs) / len(runs)
+        mean_steps = sum(r.steps_used for r in runs) / len(runs)
+        converged = sum(1 for r in runs if r.converged_early)
+        table.add_row(name, f"{mean_ms:.1f}", f"{mean_steps:.1f}", f"{converged}/{len(runs)}")
+    console.print(table)
+
+
+@app.command()
+def split(
+    cloud_url: str = typer.Option("", help="Cloud inference URL (optional)"),
+    prefer: str = typer.Option("edge", help="Prefer: edge, cloud, auto"),
+    fallback_mode: str = typer.Option("last_action", help="Fallback: last_action, zero, edge_small"),
+    action_dim: int = typer.Option(6, help="Action dimension"),
+    chunk_size: int = typer.Option(50, help="Action chunk size"),
+    output: str = typer.Option("./split_config.json", help="Output path for config"),
+    verbose: bool = typer.Option(False, help="Verbose logging"),
+):
+    """Configure cloud-edge split inference orchestration (Wedge 5)."""
+    _setup_logging(verbose)
+    from reflex.runtime.split import SplitOrchestrator, SplitConfig, InferenceTarget
+
+    cfg = SplitConfig(
+        cloud_url=cloud_url,
+        prefer=prefer,
+        fallback_mode=fallback_mode,
+    )
+    orch = SplitOrchestrator(cfg)
+    target = orch._select_target()
+
+    console.print(f"\n[bold]Reflex Split[/bold]")
+    console.print(f"  Cloud URL:       {cloud_url or '(none)'}")
+    console.print(f"  Prefer:          {prefer}")
+    console.print(f"  Fallback mode:   {fallback_mode}")
+    console.print(f"  Selected target: [cyan]{target.value}[/cyan]")
+
+    if target == InferenceTarget.FALLBACK:
+        fb = orch._get_fallback_actions(action_dim=action_dim, chunk_size=chunk_size)
+        console.print(f"  Fallback shape:  {fb.shape}")
+
+    import json
+    Path(output).write_text(json.dumps({
+        "cloud_url": cloud_url,
+        "prefer": prefer,
+        "fallback_mode": fallback_mode,
+        "selected_target": target.value,
+        "action_dim": action_dim,
+        "chunk_size": chunk_size,
+    }, indent=2))
+    console.print(f"\n[green]Split config saved: {output}[/green]")
+
+
+@app.command()
+def adapt(
+    urdf: str = typer.Option("", help="URDF file path"),
+    name: str = typer.Option("generic_arm", help="Robot name (when no URDF)"),
+    num_joints: int = typer.Option(6, help="Number of joints (when no URDF)"),
+    source_dim: int = typer.Option(0, help="Source VLA action dim (0 = same as robot)"),
+    framework: str = typer.Option("lerobot", help="Target framework: lerobot, openpi, gr00t"),
+    output: str = typer.Option("./embodiment_config.json", help="Output path"),
+    verbose: bool = typer.Option(False, help="Verbose logging"),
+):
+    """Adapt a VLA to a new robot embodiment (Wedge 6)."""
+    _setup_logging(verbose)
+    from reflex.models.adapt import EmbodimentAdapter
+
+    if urdf:
+        adapter = EmbodimentAdapter.from_urdf(urdf)
+        console.print(f"[green]Loaded URDF: {urdf}[/green]")
+    else:
+        adapter = EmbodimentAdapter.default(name, num_joints)
+        console.print(f"[yellow]Using default {num_joints}-joint embodiment[/yellow]")
+
+    console.print(f"\n[bold]Reflex Adapt[/bold]")
+    console.print(f"  Robot:        {adapter.config.name}")
+    console.print(f"  Joints:       {adapter.config.num_joints}")
+    console.print(f"  Action dim:   {adapter.config.action_dim}")
+    console.print(f"  Framework:    {framework}")
+
+    # Action mapping if source dim specified
+    src = source_dim or adapter.config.action_dim
+    mapping = adapter.create_mapping(source_dim=src)
+    console.print(f"\n  Action mapping: [cyan]{mapping.mapping_type}[/cyan] "
+                  f"({src}-dim source → {adapter.config.action_dim}-dim target)")
+
+    # Framework config
+    fw_config = adapter.generate_framework_config(framework)
+    adapter.config.save(output)
+    console.print(f"\n[green]Embodiment config saved: {output}[/green]")
+    console.print(f"[dim]Framework config summary:[/dim]")
+    for k, v in list(fw_config.items())[:5]:
+        console.print(f"  {k}: {v}")
+
+
+@app.command()
+def check(
+    checkpoint: str = typer.Argument(help="HuggingFace ID or local path"),
+    target: str = typer.Option("desktop", help="Target hardware: orin-nano, orin, orin-64, thor, desktop"),
+    verbose: bool = typer.Option(False, help="Verbose logging"),
+):
+    """Pre-deployment validation — 5 checks before shipping (Wedge 7)."""
+    _setup_logging(verbose)
+    from reflex.validate_training import run_all_checks
+
+    console.print(f"\n[bold]Reflex Check[/bold]")
+    console.print(f"  Checkpoint: {checkpoint}")
+    console.print(f"  Target:     {target}")
+    console.print()
+
+    results = run_all_checks(checkpoint, target=target)
+
+    table = Table(title="Pre-Deployment Checks")
+    table.add_column("Check", style="cyan")
+    table.add_column("Status")
+    table.add_column("Detail")
+    n_pass = 0
+    for r in results:
+        status = "[green]PASS[/green]" if r.passed else \
+                 f"[yellow]WARN[/yellow]" if r.severity == "warning" else "[red]FAIL[/red]"
+        if r.passed:
+            n_pass += 1
+        table.add_row(r.name, status, r.detail[:80])
+
+    console.print(table)
+    console.print(f"\n  Passed: [bold]{n_pass}/{len(results)}[/bold]")
+    if n_pass < len(results):
+        raise typer.Exit(1)
+
+
 if __name__ == "__main__":
     app()
