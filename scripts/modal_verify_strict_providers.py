@@ -96,54 +96,95 @@ def _make_fake_export(export_dir: str):
         }, f)
 
 
+def _wait_for_health(port: int, timeout_s: int = 60) -> tuple[bool, str]:
+    """Poll /health until model_loaded OR timeout. Returns (ready, detail)."""
+    import time
+    import httpx
+
+    t0 = time.time()
+    last_err = ""
+    while time.time() - t0 < timeout_s:
+        try:
+            resp = httpx.get(f"http://127.0.0.1:{port}/health", timeout=2.0)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("model_loaded"):
+                    mode = data.get("inference_mode", "?")
+                    return True, f"ready after {time.time()-t0:.1f}s (mode={mode})"
+                last_err = f"not_ready: {data}"
+        except Exception as e:
+            last_err = str(e)[:100]
+        time.sleep(0.5)
+    return False, f"timeout after {timeout_s}s; last: {last_err}"
+
+
+def _run_serve_with_health_check(port: int, extra_args: list[str], timeout_s: int = 60):
+    """Launch reflex serve, wait for /health, terminate cleanly. Returns dict."""
+    import subprocess
+    import time
+
+    proc = subprocess.Popen(
+        ["reflex", "serve", "/tmp/fake_export", "--port", str(port),
+         "--host", "127.0.0.1", *extra_args],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    )
+
+    # First make sure process is alive at all
+    time.sleep(1)
+    if proc.poll() is not None:
+        # Already exited — capture output and return
+        out, _ = proc.communicate(timeout=5)
+        return {
+            "exit_code": proc.returncode,
+            "ready": False,
+            "detail": "process exited before /health could be polled",
+            "stdout_tail": out[-1500:],
+        }
+
+    ready, detail = _wait_for_health(port, timeout_s=timeout_s)
+
+    # Clean shutdown (SIGTERM)
+    proc.terminate()
+    try:
+        out, _ = proc.communicate(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        out, _ = proc.communicate(timeout=5)
+
+    return {
+        "exit_code": proc.returncode,
+        "ready": ready,
+        "detail": detail,
+        "stdout_tail": out[-1500:],
+    }
+
+
 @app.function(image=image_gpu, gpu="A10G", timeout=300)
 def scenario_gpu_ok():
     """onnxruntime-gpu present, CUDA libs present → server should load on CUDA."""
-    import subprocess
     _make_fake_export("/tmp/fake_export")
 
     import onnxruntime as ort
     print(f"ORT version: {ort.__version__}", flush=True)
     print(f"Available providers: {ort.get_available_providers()}", flush=True)
 
-    # Launch server, wait briefly, check health, kill
-    import time
-    proc = subprocess.Popen(
-        ["reflex", "serve", "/tmp/fake_export", "--port", "9001",
-         "--host", "127.0.0.1", "--device", "cuda"],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-    )
-    time.sleep(6)
-    proc.terminate()
-    out, _ = proc.communicate(timeout=5)
+    result = _run_serve_with_health_check(9001, ["--device", "cuda"], timeout_s=60)
     return {
         "scenario": "gpu_ok",
-        "exit_code": proc.returncode,
-        "stdout_tail": out[-1500:],
-        "expected": "server starts successfully on CUDA",
+        **result,
+        "expected": "server starts and /health returns ready on CUDA",
     }
 
 
 @app.function(image=image_gpu, gpu="A10G", timeout=300)
 def scenario_gpu_cpu_flag():
     """--device cpu should start cleanly even on a GPU box."""
-    import subprocess
-    import time
     _make_fake_export("/tmp/fake_export")
-
-    proc = subprocess.Popen(
-        ["reflex", "serve", "/tmp/fake_export", "--port", "9002",
-         "--host", "127.0.0.1", "--device", "cpu"],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-    )
-    time.sleep(6)
-    proc.terminate()
-    out, _ = proc.communicate(timeout=5)
+    result = _run_serve_with_health_check(9002, ["--device", "cpu"], timeout_s=60)
     return {
         "scenario": "gpu_cpu_flag",
-        "exit_code": proc.returncode,
-        "stdout_tail": out[-1500:],
-        "expected": "server starts on CPU without error",
+        **result,
+        "expected": "server starts and /health returns ready on CPU",
     }
 
 
@@ -177,23 +218,14 @@ def scenario_cpu_only_silent_fallback_blocked():
 @app.function(image=image_cpu, gpu="A10G", timeout=300)
 def scenario_cpu_only_with_no_strict_flag():
     """--no-strict-providers on CPU-only box should allow fallback."""
-    import subprocess
-    import time
     _make_fake_export("/tmp/fake_export")
-
-    proc = subprocess.Popen(
-        ["reflex", "serve", "/tmp/fake_export", "--port", "9004",
-         "--host", "127.0.0.1", "--device", "cuda", "--no-strict-providers"],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    result = _run_serve_with_health_check(
+        9004, ["--device", "cuda", "--no-strict-providers"], timeout_s=30,
     )
-    time.sleep(6)
-    proc.terminate()
-    out, _ = proc.communicate(timeout=5)
     return {
         "scenario": "cpu_only_with_no_strict_flag",
-        "exit_code": proc.returncode,
-        "stdout_tail": out[-1500:],
-        "expected": "server starts despite CUDA unavailable (best-effort fallback)",
+        **result,
+        "expected": "server starts despite CUDA unavailable (best-effort fallback to CPU)",
     }
 
 
@@ -223,32 +255,40 @@ def main():
     print(f"  exit={r4['exit_code']}")
     print(f"  expected: {r4['expected']}")
 
-    # Verdict
+    # Verdict — scenarios 1, 2, 4 PASS if /health returned ready.
+    # Scenario 3 PASS if exit code is 1 (refused to start).
     print("\n" + "=" * 70)
     print("VERDICT")
     print("=" * 70)
     passes = 0
     total = 4
-    # Scenario 1: server ran until SIGTERM — exit code may be -15 or 0 depending on shell
-    if r1["exit_code"] in (0, -15, 143, None):
-        print(f"  1 PASS: server started cleanly on GPU")
+
+    if r1.get("ready"):
+        print(f"  1 PASS: server ready on GPU — {r1.get('detail')}")
         passes += 1
     else:
-        print(f"  1 FAIL: {r1['exit_code']}")
-    if r2["exit_code"] in (0, -15, 143, None):
-        print(f"  2 PASS: server started cleanly on CPU when requested")
+        print(f"  1 FAIL: ready={r1.get('ready')}, detail={r1.get('detail')}, "
+              f"exit={r1.get('exit_code')}")
+        print(f"  stdout tail:\n{r1.get('stdout_tail', '')[-2000:]}")
+
+    if r2.get("ready"):
+        print(f"  2 PASS: server ready on CPU — {r2.get('detail')}")
         passes += 1
     else:
-        print(f"  2 FAIL: {r2['exit_code']}")
+        print(f"  2 FAIL: ready={r2.get('ready')}, detail={r2.get('detail')}, "
+              f"exit={r2.get('exit_code')}")
+
     if r3["exit_code"] == 1:
-        print(f"  3 PASS: refused to silently fall back to CPU")
+        print(f"  3 PASS: refused to silently fall back to CPU (exit 1)")
         passes += 1
     else:
         print(f"  3 FAIL (expected exit 1, got {r3['exit_code']})")
-    if r4["exit_code"] in (0, -15, 143, None):
-        print(f"  4 PASS: --no-strict-providers allowed fallback")
+
+    if r4.get("ready"):
+        print(f"  4 PASS: --no-strict-providers allowed fallback — {r4.get('detail')}")
         passes += 1
     else:
-        print(f"  4 FAIL: {r4['exit_code']}")
+        print(f"  4 FAIL: ready={r4.get('ready')}, detail={r4.get('detail')}, "
+              f"exit={r4.get('exit_code')}")
 
     print(f"\nOverall: {passes}/{total}")

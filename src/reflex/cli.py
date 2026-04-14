@@ -267,9 +267,37 @@ def serve(
              "error instead of silently falling back. Set this only if you "
              "explicitly want best-effort fallback.",
     ),
+    safety_config: str = typer.Option(
+        "",
+        help="Path to a SafetyLimits JSON (from `reflex guard init`). When set, "
+             "every returned action is clamped to the configured joint limits "
+             "and violation counts are logged.",
+    ),
+    adaptive_steps: bool = typer.Option(
+        False,
+        "--adaptive-steps",
+        help="Use reflex turbo adaptive denoising — stops the denoise loop "
+             "early when velocity norm converges. Saves latency on easy tasks.",
+    ),
+    cloud_fallback: str = typer.Option(
+        "",
+        help="URL of a remote reflex serve (e.g. http://cloud-host:8000). When "
+             "set, a reflex split orchestrator is configured for cloud-edge "
+             "routing. v0.1 stores config only; full dispatch lands in Phase VI.",
+    ),
+    deadline_ms: float = typer.Option(
+        0.0,
+        help="Per-request deadline in ms. 0 = disabled. When set, predict() "
+             "returns the last-known-good action instead if inference exceeds "
+             "the deadline. Deadline misses are logged and counted.",
+    ),
     verbose: bool = typer.Option(False, help="Verbose logging"),
 ):
-    """Start a VLA inference server. POST /act with image + instruction → actions."""
+    """Start a VLA inference server. POST /act with image + instruction → actions.
+
+    Composable wedges: --safety-config (guard), --adaptive-steps (turbo),
+    --cloud-fallback (split), --deadline-ms (WCET).
+    """
     _setup_logging(verbose)
 
     export_path = Path(export_dir)
@@ -316,6 +344,19 @@ def serve(
     console.print(f"  Server:  http://{host}:{port}")
     console.print(f"  [dim]ORT available providers: {available}[/dim]")
 
+    # Composed wedges summary
+    composed = []
+    if safety_config:
+        composed.append(f"[cyan]safety[/cyan]={safety_config}")
+    if adaptive_steps:
+        composed.append("[cyan]adaptive-steps[/cyan]")
+    if cloud_fallback:
+        composed.append(f"[cyan]cloud-fallback[/cyan]={cloud_fallback}")
+    if deadline_ms > 0:
+        composed.append(f"[cyan]deadline[/cyan]={deadline_ms:.0f}ms")
+    if composed:
+        console.print(f"  Wedges:  {' · '.join(composed)}")
+
     if cuda_requested and not cuda_available_in_ort:
         console.print(
             "\n[red]⚠ CUDAExecutionProvider not available in this ORT install.[/red]\n"
@@ -347,6 +388,10 @@ def serve(
         device=device,
         providers=provider_list,
         strict_providers=not no_strict_providers,
+        safety_config=safety_config or None,
+        adaptive_steps=adaptive_steps,
+        cloud_fallback_url=cloud_fallback,
+        deadline_ms=deadline_ms if deadline_ms > 0 else None,
     )
     console.print("[bold green]Starting server...[/bold green]")
     uvicorn.run(app_instance, host=host, port=port, log_level="info" if verbose else "warning")
