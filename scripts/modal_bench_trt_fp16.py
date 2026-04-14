@@ -64,7 +64,8 @@ def bench_trt():
     print(f"trtexec available: {r.returncode == 0}", flush=True)
     try:
         import tensorrt as trt_mod
-        print(f"TensorRT Python: {trt_mod.__version__}", flush=True)
+        ver = getattr(trt_mod, "__version__", None) or getattr(trt_mod, "Version", None) or "unknown"
+        print(f"TensorRT Python: {ver}", flush=True)
     except ImportError:
         print("TensorRT Python: MISSING", flush=True)
     import onnxruntime as ort
@@ -214,16 +215,16 @@ def bench_trt():
         trt_stats = None
         try:
             engine_path = f"{onnx_dir}/expert.fp16.engine"
+            # Our ONNX export has static shapes baked in (no dynamic_axes),
+            # so we MUST NOT pass --minShapes/--optShapes/--maxShapes — trtexec
+            # rejects them for static models. The engine is fixed at the export
+            # shape (batch=1, chunk=50, action_dim from model).
             build_cmd = [
                 "trtexec",
                 f"--onnx={onnx_path}",
                 f"--saveEngine={engine_path}",
                 "--fp16",
                 "--memPoolSize=workspace:4096MiB",
-                # Static shape — batch=1, chunk=50, action_dim fixed
-                f"--optShapes=noisy_actions:1x50x{action_dim},timestep:1,position_ids:1x50",
-                f"--minShapes=noisy_actions:1x50x{action_dim},timestep:1,position_ids:1x50",
-                f"--maxShapes=noisy_actions:1x50x{action_dim},timestep:1,position_ids:1x50",
             ]
             print(f"    building: trtexec --fp16 ...", flush=True)
             t0 = time.time()
