@@ -9,7 +9,11 @@ This guide assumes a Linux box with an NVIDIA GPU. CPU-only deployments work wit
 ## Install
 
 ```bash
+# GPU box (requires CUDA 12 + cuDNN 9 — easiest via nvcr.io/nvidia/tensorrt container):
 pip install 'reflex-vla[serve,gpu] @ git+https://github.com/rylinjames/reflex-vla'
+
+# CPU-only box:
+pip install 'reflex-vla[serve,onnx] @ git+https://github.com/rylinjames/reflex-vla'
 ```
 
 Or for development from source:
@@ -17,7 +21,7 @@ Or for development from source:
 ```bash
 git clone https://github.com/rylinjames/reflex-vla
 cd reflex-vla
-pip install -e '.[serve,gpu,dev]'
+pip install -e '.[serve,gpu,dev]'  # or [serve,onnx,dev] for CPU
 ```
 
 If `--device cuda` errors with "CUDAExecutionProvider not available," see [Troubleshooting](#troubleshooting) below.

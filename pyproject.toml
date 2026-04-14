@@ -27,18 +27,24 @@ dependencies = [
     "pydantic>=2.0.0",
     "numpy>=1.24.0",
     "pyyaml>=6.0",
+    # Always needed: hub access for `reflex export <hf_id>` and tokenizer/config
+    # loading for the auto-detect path. Apr-14 install-path verification caught
+    # that omitting these breaks `reflex export` even with [serve,gpu].
+    "huggingface_hub>=0.20.0",
+    "transformers>=4.40,<5.0",
+    "onnx>=1.15.0",
+    "onnxscript>=0.1.0",
 ]
 
 [project.optional-dependencies]
-# Core ONNX export + CPU inference.
-onnx = ["onnx>=1.15.0", "onnxruntime>=1.17.0"]
+# CPU inference runtime (onnx is a core dep now). Use this for CPU-only boxes.
+onnx = ["onnxruntime>=1.17.0"]
 # GPU inference — installs onnxruntime-gpu AND the ORT-compatible CUDA stack.
 # Use this when deploying to a box with an NVIDIA GPU. ORT 1.20+ wants CUDA 12.x
 # and cuDNN 9.x; these pip deps ship their own libs so the end-user doesn't have
 # to install CUDA separately. Apr-14 post-mortem: omitting these was the cause
 # of silent CPU fallback in v0.1 benchmarks.
 gpu = [
-    "onnx>=1.15.0",
     "onnxruntime-gpu>=1.20,<1.24",
     "nvidia-cudnn-cu12>=9.0,<10.0",
     "nvidia-cublas-cu12>=12.0,<13.0",
@@ -51,8 +57,6 @@ serve = [
     "fastapi>=0.100.0",
     "uvicorn>=0.23.0",
     "Pillow>=10.0.0",
-    "onnx>=1.15.0",
-    "onnxruntime>=1.17.0",
 ]
 safety = ["yourdfpy"]
 dev = ["pytest>=8.0", "ruff>=0.4.0", "mypy>=1.10", "httpx>=0.24.0"]
