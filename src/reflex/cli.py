@@ -179,13 +179,91 @@ def validate(
 def benchmark_cmd(
     export_dir: str = typer.Argument(help="Path to exported model directory"),
     iterations: int = typer.Option(100, help="Number of benchmark iterations"),
+    warmup: int = typer.Option(20, help="Warmup iterations (excluded from stats)"),
+    device: str = typer.Option("cuda", help="Device: cuda or cpu"),
     verbose: bool = typer.Option(False, help="Verbose logging"),
 ):
-    """Benchmark exported model latency."""
+    """Benchmark exported model latency end-to-end (denoising loop on actual hardware).
+
+    Loads the export, warms up, runs N iterations of the full denoising loop,
+    reports mean/p50/p95/p99 latency. Use this to verify your install is fast
+    before pointing a real robot at the server.
+    """
     _setup_logging(verbose)
+    import time as _t
+    import numpy as np
+
+    export_path = Path(export_dir)
+    if not export_path.exists():
+        console.print(f"[red]Export directory not found: {export_dir}[/red]")
+        raise typer.Exit(1)
+
+    onnx_files = list(export_path.glob("*.onnx"))
+    if not onnx_files:
+        console.print(f"[red]No ONNX file in {export_dir}[/red]")
+        raise typer.Exit(1)
+
     console.print(f"\n[bold]Reflex Benchmark[/bold]")
-    console.print(f"  Export: {export_dir}")
+    console.print(f"  Export:    {export_dir}")
+    console.print(f"  Device:    {device}")
+    console.print(f"  Warmup:    {warmup}")
     console.print(f"  Iterations: {iterations}")
+
+    from reflex.runtime.server import ReflexServer
+    server = ReflexServer(export_dir, device=device, strict_providers=False)
+    console.print("[dim]Loading model...[/dim]")
+    t0 = _t.perf_counter()
+    server.load()
+    load_s = _t.perf_counter() - t0
+    if not server.ready:
+        console.print("[red]Model failed to load.[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"  Loaded:    {load_s:.1f}s  (mode={server._inference_mode})"
+    )
+
+    # Warmup
+    console.print(f"[dim]Warming up ({warmup} iterations)...[/dim]")
+    for _ in range(warmup):
+        server.predict()
+
+    # Bench
+    console.print(f"[dim]Benchmarking ({iterations} iterations)...[/dim]")
+    latencies: list[float] = []
+    for _ in range(iterations):
+        t0 = _t.perf_counter()
+        server.predict()
+        latencies.append((_t.perf_counter() - t0) * 1000)
+    latencies.sort()
+
+    mean = sum(latencies) / len(latencies)
+    p50 = latencies[len(latencies) // 2]
+    p95 = latencies[int(len(latencies) * 0.95)]
+    p99 = latencies[int(len(latencies) * 0.99)]
+    minv = latencies[0]
+    maxv = latencies[-1]
+
+    console.print(f"\n[bold]Per-chunk latency (10-step denoise loop):[/bold]")
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_column(style="cyan")
+    table.add_column(justify="right")
+    table.add_row("min",  f"{minv:7.2f} ms")
+    table.add_row("mean", f"{mean:7.2f} ms")
+    table.add_row("p50",  f"{p50:7.2f} ms")
+    table.add_row("p95",  f"{p95:7.2f} ms")
+    table.add_row("p99",  f"{p99:7.2f} ms")
+    table.add_row("max",  f"{maxv:7.2f} ms")
+    table.add_row("hz",   f"{1000.0/mean:7.1f}")
+    console.print(table)
+
+    console.print(
+        f"\n  [dim]Inference mode:[/dim] [bold]{server._inference_mode}[/bold]"
+    )
+    if server._inference_mode == "onnx_cpu" and device == "cuda":
+        console.print(
+            "  [yellow]Note: requested device=cuda but ended up on CPU. "
+            "Install onnxruntime-gpu and CUDA 12 + cuDNN 9 for GPU performance.[/yellow]"
+        )
 
 
 @app.command()
