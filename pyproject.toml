@@ -30,9 +30,30 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Core ONNX export + CPU inference.
 onnx = ["onnx>=1.15.0", "onnxruntime>=1.17.0"]
+# GPU inference — installs onnxruntime-gpu AND the ORT-compatible CUDA stack.
+# Use this when deploying to a box with an NVIDIA GPU. ORT 1.20+ wants CUDA 12.x
+# and cuDNN 9.x; these pip deps ship their own libs so the end-user doesn't have
+# to install CUDA separately. Apr-14 post-mortem: omitting these was the cause
+# of silent CPU fallback in v0.1 benchmarks.
+gpu = [
+    "onnx>=1.15.0",
+    "onnxruntime-gpu>=1.20,<1.24",
+    "nvidia-cudnn-cu12>=9.0,<10.0",
+    "nvidia-cublas-cu12>=12.0,<13.0",
+]
 # tensorrt = ["tensorrt>=10.0"]  # install on Linux/Jetson only: pip install tensorrt
-serve = ["fastapi>=0.100.0", "uvicorn>=0.23.0", "Pillow>=10.0.0"]
+# HTTP serve stack. Includes onnxruntime (CPU) so `pip install reflex-vla[serve]`
+# gives you a working server out of the box. For GPU, use `[serve,gpu]` to pull in
+# onnxruntime-gpu + CUDA libs.
+serve = [
+    "fastapi>=0.100.0",
+    "uvicorn>=0.23.0",
+    "Pillow>=10.0.0",
+    "onnx>=1.15.0",
+    "onnxruntime>=1.17.0",
+]
 safety = ["yourdfpy"]
 dev = ["pytest>=8.0", "ruff>=0.4.0", "mypy>=1.10", "httpx>=0.24.0"]
 
