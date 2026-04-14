@@ -47,7 +47,13 @@ reflex check    # pre-deployment validation
 
 ## Verification
 
-Full E2E tested on Modal A100:
-- `reflex export lerobot/smolvla_base` → 43.7s, ONNX + validation pass
-- `reflex serve` → ready in 4s
-- `POST /act` → 50 actions × 32 dims, 242ms mean / 4.1Hz on CPU provider
+Full E2E (export → serve → POST /act) tested on Modal A100, ONNX Runtime CPU provider, 10 denoising steps:
+
+| Model | Expert params | Export | ONNX max_diff | Mean latency | Hz |
+|---|---|---|---|---|---|
+| SmolVLA | 100M | 47s | 3.3e-06 | 246ms | 4.1 |
+| pi0 | 314M | 97s | 6.0e-08 | 588ms | 1.7 |
+| pi0.5 | 427M | 95s | 2.5e-06 | 704ms | 1.4 |
+
+GPU provider and TensorRT builds (on Jetson) expected to push these 5-10x faster.
+Validation diff is measured against the original PyTorch forward pass.
