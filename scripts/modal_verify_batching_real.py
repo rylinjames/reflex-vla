@@ -95,17 +95,34 @@ def test_real_batching():
         if max_batch > 1:
             cmd.extend(["--max-batch", str(max_batch),
                         "--batch-timeout-ms", "20"])
+        # Use a real file for stdout — subprocess.PIPE deadlocks if the
+        # process logs more than one OS pipe buffer (~64KB) before we read.
+        stdout_path = f"/tmp/reflex_serve_{port}.log"
+        stdout_fh = open(stdout_path, "wb")
         proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            cmd, stdout=stdout_fh, stderr=subprocess.STDOUT,
         )
-        ready = _wait_for_health(port, 60)
+        # 180s — pi0 ONNX is ~1.7GB; first ORT-GPU session creation can be slow.
+        ready = _wait_for_health(port, 180)
         if not ready:
             try:
                 proc.terminate()
                 proc.wait(timeout=5)
             except Exception:
                 proc.kill()
-            return {"label": label, "error": "server failed to start"}
+            stdout_fh.close()
+            with open(stdout_path, "rb") as f:
+                f.seek(0, 2)
+                size = f.tell()
+                f.seek(max(0, size - 2000))
+                tail = f.read().decode(errors="replace")
+            print(f"  STDOUT TAIL [{label}]:\n{tail}", flush=True)
+            return {
+                "label": label,
+                "error": "server failed to start (180s timeout)",
+                "stdout_tail": tail[-1500:],
+                "exit_code": proc.returncode,
+            }
 
         # 5 sequential warmups so the GPU is hot
         for _ in range(5):
@@ -130,6 +147,7 @@ def test_real_batching():
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait(timeout=5)
+        stdout_fh.close()
 
         throughput_qps = n_concurrent / elapsed if elapsed > 0 else 0
         return {
