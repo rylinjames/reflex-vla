@@ -725,5 +725,174 @@ def check(
         raise typer.Exit(1)
 
 
+@app.command()
+def doctor():
+    """Diagnose common Reflex install + GPU issues. Run this BEFORE opening a bug.
+
+    Checks Python version, torch + CUDA availability, ONNX Runtime install
+    + execution providers, TensorRT (trtexec), HuggingFace Hub auth, and
+    common version mismatches that cause the silent CPU fallback footgun.
+    """
+    import platform
+    import shutil
+    import sys
+
+    table = Table(title="Reflex Doctor")
+    table.add_column("Check", style="cyan", no_wrap=True)
+    table.add_column("Status", no_wrap=True)
+    table.add_column("Detail")
+
+    def add(name: str, ok: bool, detail: str):
+        symbol = "[green]✓[/green]" if ok else "[yellow]⚠[/yellow]"
+        table.add_row(name, symbol, detail)
+
+    # Python
+    py = sys.version_info
+    add(
+        "Python version",
+        py >= (3, 10),
+        f"{py.major}.{py.minor}.{py.micro} (need ≥3.10)",
+    )
+
+    # OS / architecture
+    add("Platform", True, f"{platform.system()} {platform.machine()}")
+
+    # torch + CUDA
+    try:
+        import torch
+        cuda_ok = torch.cuda.is_available()
+        cuda_detail = (
+            f"torch {torch.__version__}, CUDA {torch.version.cuda}, "
+            f"available={cuda_ok}"
+        )
+        if cuda_ok:
+            cuda_detail += f", devices={torch.cuda.device_count()}, "
+            cuda_detail += f"name={torch.cuda.get_device_name(0)}"
+        add("torch + CUDA", cuda_ok, cuda_detail)
+    except ImportError as e:
+        add("torch + CUDA", False, f"torch not installed: {e}")
+
+    # ONNX Runtime + execution providers
+    try:
+        import onnxruntime as ort
+        providers = ort.get_available_providers()
+        has_trt = "TensorrtExecutionProvider" in providers
+        has_cuda = "CUDAExecutionProvider" in providers
+        ort_detail = f"ort {ort.__version__}, providers={providers}"
+        add(
+            "ONNX Runtime",
+            True,
+            ort_detail,
+        )
+        add(
+            "  → CUDAExecutionProvider",
+            has_cuda,
+            "available" if has_cuda else (
+                "NOT available — install onnxruntime-gpu or check CUDA 12 + cuDNN 9 system libs"
+            ),
+        )
+        add(
+            "  → TensorrtExecutionProvider",
+            has_trt,
+            "available — reflex serve will auto-prefer this" if has_trt else
+            "NOT available — TRT FP16 disabled, will use CUDA EP",
+        )
+    except ImportError:
+        add(
+            "ONNX Runtime",
+            False,
+            "not installed — run `pip install onnxruntime-gpu` (or [onnx] for CPU)",
+        )
+
+    # ONNX (the format library)
+    try:
+        import onnx
+        add("onnx (graph format)", True, f"version {onnx.__version__}")
+    except ImportError:
+        add("onnx (graph format)", False, "not installed — included in core deps now")
+
+    # onnxscript (needed for torch.onnx.export new path)
+    try:
+        import onnxscript
+        add("onnxscript", True, f"version {onnxscript.__version__}")
+    except ImportError:
+        add("onnxscript", False, "not installed — needed by torch.onnx.export")
+
+    # transformers + huggingface_hub
+    try:
+        import transformers
+        add("transformers", True, f"version {transformers.__version__}")
+    except ImportError:
+        add("transformers", False, "not installed — needed for some exporters")
+    try:
+        import huggingface_hub
+        add("huggingface_hub", True, f"version {huggingface_hub.__version__}")
+    except ImportError:
+        add("huggingface_hub", False, "not installed — needed to download checkpoints")
+
+    # FastAPI + uvicorn (for serve)
+    try:
+        import fastapi
+        import uvicorn
+        add("fastapi + uvicorn", True, f"fastapi {fastapi.__version__} / uvicorn {uvicorn.__version__}")
+    except ImportError:
+        add(
+            "fastapi + uvicorn",
+            False,
+            "not installed — run `pip install reflex-vla[serve,gpu]` for the server",
+        )
+
+    # safetensors
+    try:
+        import safetensors
+        add("safetensors", True, f"version {safetensors.__version__}")
+    except ImportError:
+        add("safetensors", False, "not installed — needed to load checkpoints")
+
+    # trtexec (for building .trt engines via reflex export)
+    trtexec_path = shutil.which("trtexec")
+    add(
+        "trtexec (TensorRT)",
+        bool(trtexec_path),
+        trtexec_path or "not on PATH — TRT engine build skipped during reflex export "
+                         "(install Jetpack on Jetson, or use nvcr.io/nvidia/tensorrt container)",
+    )
+
+    # Disk space at /tmp (where exports default)
+    try:
+        usage = shutil.disk_usage("/tmp")
+        free_gb = usage.free / 1e9
+        add(
+            "Free disk in /tmp",
+            free_gb > 10,
+            f"{free_gb:.1f} GB free (need ~10 GB for largest model export)",
+        )
+    except Exception as e:
+        add("Free disk in /tmp", False, str(e))
+
+    # HuggingFace cache
+    hf_home = os.environ.get("HF_HOME") or os.path.expanduser("~/.cache/huggingface")
+    if os.path.exists(hf_home):
+        try:
+            usage = shutil.disk_usage(hf_home)
+            add("HF cache disk", usage.free > 10e9, f"{hf_home} ({usage.free / 1e9:.1f} GB free)")
+        except Exception:
+            pass
+
+    # Reflex itself
+    try:
+        from reflex import __version__ as reflex_version
+        add("reflex-vla", True, f"version {reflex_version}")
+    except Exception as e:
+        add("reflex-vla", False, str(e))
+
+    console.print(table)
+    console.print(
+        "\n[dim]If something here is unexpected, see "
+        "[cyan]docs/getting_started.md → Troubleshooting[/cyan] before "
+        "opening an issue.[/dim]"
+    )
+
+
 if __name__ == "__main__":
     app()
