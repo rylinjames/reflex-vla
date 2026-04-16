@@ -201,30 +201,58 @@ def run_trajectory_replay():
     max_frames = 500  # cap total frames to keep runtime reasonable
 
     try:
+        first_sample_logged = False
         for sample in dataset:
             if frames_seen >= max_frames:
                 break
 
+            if not first_sample_logged:
+                print(f"  Dataset columns: {list(sample.keys())}")
+                for k, v in sample.items():
+                    vtype = type(v).__name__
+                    vinfo = ""
+                    if hasattr(v, 'shape'):
+                        vinfo = f" shape={v.shape}"
+                    elif hasattr(v, 'size'):
+                        vinfo = f" size={v.size}"
+                    elif isinstance(v, (list, tuple)):
+                        vinfo = f" len={len(v)}"
+                    print(f"    {k}: {vtype}{vinfo}")
+                first_sample_logged = True
+
             ep_idx = sample.get("episode_index", 0)
             if len(episodes) >= NUM_EPISODES and ep_idx not in episodes:
-                # Already have enough episodes, skip new ones
                 continue
 
             if ep_idx not in episodes:
                 episodes[ep_idx] = {"frames": [], "actions": []}
 
-            # Extract image -- LeRobot uses PIL images in "observation.images.top"
-            # or "observation.image" depending on dataset version
+            # Extract image -- LeRobot v2 uses "observation.images.top" (PIL Image)
+            # LeRobot v1 uses "observation.image"
+            # Some datasets nest under observation.images.{camera_name}
             img = None
             for img_key in [
                 "observation.images.top",
-                "observation.image",
                 "observation.images.front",
+                "observation.images.wrist",
+                "observation.image",
+                "observation.images.laptop",
+                "observation.images.phone",
                 "image",
+                "pixel_values",
             ]:
                 if img_key in sample and sample[img_key] is not None:
                     img = sample[img_key]
                     break
+
+            # If still None, try any key containing "image"
+            if img is None:
+                for k, v in sample.items():
+                    if "image" in k.lower() and v is not None:
+                        img = v
+                        if not first_sample_logged:
+                            print(f"  Found image in fallback key: {k}")
+                        break
 
             if img is None:
                 # Try to find any key with "image" in the name
