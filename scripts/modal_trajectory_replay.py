@@ -36,7 +36,7 @@ image = (
         "typer",
         "rich",
         "pyyaml",
-        "lerobot @ git+https://github.com/huggingface/lerobot.git",
+        "datasets",
     )
     .add_local_dir("src/reflex", "/root/reflex-vla/src/reflex", copy=True)
     .add_local_file("pyproject.toml", "/root/reflex-vla/pyproject.toml", copy=True)
@@ -128,42 +128,45 @@ def run_trajectory_replay():
         serve_proc.terminate()
         return results
 
-    # ── Step 3: Load dataset via LeRobot native loader ─────────────
-    print("\n=== Step 3: Load dataset via LeRobotDataset ===")
+    # ── Step 3: Load dataset (full download — decodes images) ───────
+    print("\n=== Step 3: Download dataset (non-streaming) ===")
     episodes = {}
     try:
-        from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
+        from datasets import load_dataset
 
         dataset_name = "lerobot/pusht"
-        print(f"  Loading {dataset_name}...")
-        lr_dataset = LeRobotDataset(dataset_name)
-        print(f"  Total frames: {len(lr_dataset)}")
+        print(f"  Downloading {dataset_name} (full, ~100MB)...")
+        ds = load_dataset(dataset_name, split="train")
+        print(f"  Total frames: {len(ds)}")
+        print(f"  Columns: {ds.column_names}")
 
-        sample0 = lr_dataset[0]
-        print(f"  Sample keys: {list(sample0.keys())}")
+        sample0 = ds[0]
         for k, v in sample0.items():
-            info = f" shape={v.shape} dtype={v.dtype}" if hasattr(v, 'shape') else ""
-            print(f"    {k}: {type(v).__name__}{info}")
+            vtype = type(v).__name__
+            info = ""
+            if hasattr(v, 'shape'):
+                info = f" shape={v.shape}"
+            elif hasattr(v, 'size'):
+                info = f" size={v.size}"
+            elif isinstance(v, (list, tuple)):
+                info = f" len={len(v)}"
+            print(f"    {k}: {vtype}{info}")
 
-        # Collect frames
         frames_seen = 0
         max_frames = 500
 
-        for idx in range(min(len(lr_dataset), max_frames)):
-            sample = lr_dataset[idx]
+        for idx in range(min(len(ds), max_frames)):
+            sample = ds[idx]
             ep_idx = sample.get("episode_index", 0)
-            if hasattr(ep_idx, 'item'):
-                ep_idx = ep_idx.item()
 
             if len(episodes) >= NUM_EPISODES and ep_idx not in episodes:
                 continue
             if ep_idx not in episodes:
                 episodes[ep_idx] = {"frames": [], "actions": []}
 
-            # Find image
             img = None
             for img_key in ["observation.images.top", "observation.image",
-                            "observation.images.front", "observation.images.wrist"]:
+                            "observation.images.front", "image"]:
                 if img_key in sample and sample[img_key] is not None:
                     img = sample[img_key]
                     break
@@ -173,12 +176,13 @@ def run_trajectory_replay():
                         img = v
                         break
 
-            # Find action
             action = sample.get("action", None)
             if action is None:
                 continue
             if hasattr(action, "tolist"):
                 action = action.tolist()
+            elif isinstance(action, (list, tuple)):
+                action = list(action)
 
             episodes[ep_idx]["frames"].append(img)
             episodes[ep_idx]["actions"].append(action)
