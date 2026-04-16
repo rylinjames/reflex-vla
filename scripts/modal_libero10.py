@@ -99,7 +99,8 @@ EXPORT_DIR = os.environ.get("REFLEX_EXPORT_DIR", "/tmp/reflex_libero_export")
 class ReflexSmolVLAServer(PredictModelServer):
     """Serves SmolVLA via Reflex ONNX for vla-eval benchmarks."""
 
-    def __init__(self):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
         config_path = os.path.join(EXPORT_DIR, "reflex_config.json")
         with open(config_path) as f:
             self.config = json.load(f)
