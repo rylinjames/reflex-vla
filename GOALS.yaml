@@ -1,0 +1,78 @@
+version: 1
+mission: "Deploy any VLA model to any edge hardware. One command."
+
+goals:
+  # ── CRITICAL (weight 10) ──────────────────────────────────────────
+
+  - id: vlm-prefix-encoder
+    description: "VLM backbone exports as separate ONNX with KV-cache so /act returns task-conditioned actions instead of random-tensor noise"
+    check: "test -f src/reflex/exporters/vlm_prefix_exporter.py && .venv/bin/python -c 'from reflex.exporters.vlm_prefix_exporter import export_vlm_prefix' 2>/dev/null"
+    weight: 10
+
+  # ── HIGH (weight 8-9) ─────────────────────────────────────────────
+
+  - id: distill-dmpo
+    description: "reflex distill implements DMPO one-step generation (no teacher) targeting 1000+ Hz on consumer GPUs"
+    check: "test -f src/reflex/distill/dmpo.py && .venv/bin/python -c 'from reflex.distill.dmpo import DMPOTrainer' 2>/dev/null"
+    weight: 9
+
+  - id: stripe-license-gating
+    description: "Stripe subscription verification gates Pro-tier features (distill, fleet batching) behind a valid license key"
+    check: "test -f src/reflex/licensing.py && .venv/bin/python -c 'from reflex.licensing import verify_license' 2>/dev/null"
+    weight: 8
+
+  - id: ros2-bridge
+    description: "reflex serve --ros2 wraps the HTTP endpoint with a thin rclpy action server for native ROS2 integration"
+    check: "grep -q 'ros2' src/reflex/runtime/server.py 2>/dev/null || test -f src/reflex/runtime/ros2_bridge.py"
+    weight: 8
+
+  # ── MEDIUM-HIGH (weight 7) ────────────────────────────────────────
+
+  - id: nan-guard-hardening
+    description: "Guard rejects NaN/Inf actions and halts after N consecutive clamps (staleness kill-switch)"
+    check: "grep -q 'nan' src/reflex/safety/guard.py 2>/dev/null && grep -q 'staleness\\|stale' src/reflex/safety/guard.py 2>/dev/null"
+    weight: 7
+
+  - id: xvla-exporter
+    description: "reflex export auto-detects and exports xVLA (880M, tokenized action head) to ONNX"
+    check: "test -f src/reflex/exporters/xvla_exporter.py && .venv/bin/python -c 'from reflex.exporters.xvla_exporter import export_xvla' 2>/dev/null"
+    weight: 7
+
+  - id: api-key-auth
+    description: "reflex serve --api-key enables X-Reflex-Key header auth that rejects unauthenticated requests with 401"
+    check: "grep -q 'api.key\\|api_key\\|X-Reflex-Key' src/reflex/runtime/server.py 2>/dev/null"
+    weight: 7
+
+  # ── MEDIUM (weight 5-6) ───────────────────────────────────────────
+
+  - id: latency-histograms
+    description: "/act response includes latency_p50, latency_p95, latency_p99, jitter_ms fields"
+    check: "grep -q 'latency_p95\\|p95' src/reflex/runtime/server.py 2>/dev/null"
+    weight: 6
+
+  - id: adaptive-denoise-fix
+    description: "Adaptive denoising works on pi0 (supported), is gated behind --experimental for smolvla/pi0.5/gr00t (unsafe)"
+    check: "grep -q 'experimental\\|EXPERIMENTAL' src/reflex/kernels/turbo.py 2>/dev/null"
+    weight: 5
+
+  - id: determinism-version-hash
+    description: "Every /act response includes model_hash, config_hash, reflex_version for reproducible debugging"
+    check: "grep -q 'model_hash' src/reflex/runtime/server.py 2>/dev/null"
+    weight: 5
+
+  # ── LOW (weight 3-4) ──────────────────────────────────────────────
+
+  - id: inference-test-coverage
+    description: "Unit tests for inference.py and individual exporter modules (currently zero direct coverage)"
+    check: "test -f tests/test_inference.py && .venv/bin/python -m pytest tests/test_inference.py -q --tb=no 2>/dev/null"
+    weight: 4
+
+  - id: openvla-exporter
+    description: "reflex export auto-detects and exports OpenVLA (7.5B, tokenized head) beyond the current stub"
+    check: "grep -c 'def export_openvla' src/reflex/exporters/openvla_exporter.py 2>/dev/null | grep -q '[1-9]'"
+    weight: 4
+
+  - id: sqlite-audit-log
+    description: "reflex serve --audit-db appends every /act call to a SHA-256 hash-chain SQLite log"
+    check: "test -f src/reflex/safety/audit_log.py && .venv/bin/python -c 'from reflex.safety.audit_log import AuditLog' 2>/dev/null"
+    weight: 3
