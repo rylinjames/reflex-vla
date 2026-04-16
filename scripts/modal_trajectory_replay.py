@@ -36,7 +36,7 @@ image = (
         "typer",
         "rich",
         "pyyaml",
-        "lerobot",
+        "lerobot @ git+https://github.com/huggingface/lerobot.git",
     )
     .add_local_dir("src/reflex", "/root/reflex-vla/src/reflex", copy=True)
     .add_local_file("pyproject.toml", "/root/reflex-vla/pyproject.toml", copy=True)
