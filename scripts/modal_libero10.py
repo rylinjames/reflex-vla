@@ -29,11 +29,12 @@ image = (
     )
     .pip_install("vla-eval")
     .pip_install("robosuite>=1.4", "h5py")
+    .add_local_file("scripts/patch_libero.py", "/root/patch_libero.py", copy=True)
     .run_commands(
         "git clone https://github.com/Lifelong-Robot-Learning/LIBERO.git /opt/LIBERO"
         " && cd /opt/LIBERO && pip install -e ."
         # Patch LIBERO's interactive prompts (uses a separate script to avoid quoting hell)
-        " && python /root/reflex-vla/scripts/patch_libero.py"
+        " && python /root/patch_libero.py"
         " && python -c 'from libero.libero import benchmark; print(\"LIBERO import OK\")'"
     )
     .add_local_dir("src/reflex", "/root/reflex-vla/src/reflex", copy=True)
