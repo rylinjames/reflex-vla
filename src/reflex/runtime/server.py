@@ -87,6 +87,9 @@ class ReflexServer:
         self.config = self._load_config()
         self.model = None
         self._ready = False
+        self._vlm_session = None
+        self._vlm_loaded = False
+        self._expert_input_names: list[str] = []
 
         # Composed wedges (Phase I.2)
         self._safety_config_path = Path(safety_config) if safety_config else None
@@ -130,6 +133,13 @@ class ReflexServer:
         else:
             logger.warning("No ONNX model found, inference not available")
             return
+
+        # Cache expert input names for backward compat (v0.1 exports may not have vlm_kv)
+        self._expert_input_names = [inp.name for inp in self._ort_session.get_inputs()]
+        logger.info("Expert ONNX inputs: %s", self._expert_input_names)
+
+        # Load VLM prefix encoder if config specifies one
+        self._load_vlm_prefix()
 
         # ---- Wedge composition (Phase I.2) ----
         # reflex guard: safety limits
@@ -299,28 +309,154 @@ class ReflexServer:
         else:
             self._inference_mode = "onnx_cpu"
 
+    def _load_vlm_prefix(self) -> None:
+        """Load VLM prefix ONNX session if configured.
+
+        Checks for ``vlm_prefix_onnx`` in reflex_config.json. If present,
+        loads the VLM prefix encoder as a CPU-only ORT session. If absent,
+        logs a warning and falls back to dummy conditioning (v0.1 mode).
+        """
+        vlm_onnx_name = self.config.get("vlm_prefix_onnx")
+        if not vlm_onnx_name:
+            self._vlm_session = None
+            self._vlm_loaded = False
+            logger.info("VLM prefix not found, using dummy conditioning (v0.1 mode)")
+            return
+
+        vlm_path = self.export_dir / vlm_onnx_name
+        if not vlm_path.exists():
+            self._vlm_session = None
+            self._vlm_loaded = False
+            logger.warning(
+                "Config specifies vlm_prefix_onnx=%s but file not found at %s — "
+                "falling back to dummy conditioning",
+                vlm_onnx_name, vlm_path,
+            )
+            return
+
+        try:
+            import onnxruntime as ort
+
+            # CPU-only for VLM prefix in v1
+            self._vlm_session = ort.InferenceSession(
+                str(vlm_path), providers=["CPUExecutionProvider"]
+            )
+            self._vlm_loaded = True
+            vlm_inputs = [inp.name for inp in self._vlm_session.get_inputs()]
+            vlm_outputs = [out.name for out in self._vlm_session.get_outputs()]
+            logger.info(
+                "Loaded VLM prefix encoder: %s (CPU) — inputs: %s, outputs: %s",
+                vlm_path.name, vlm_inputs, vlm_outputs,
+            )
+        except Exception as e:
+            self._vlm_session = None
+            self._vlm_loaded = False
+            logger.warning("Failed to load VLM prefix encoder: %s — using dummy conditioning", e)
+
+    def _run_vlm_prefix(self, image: np.ndarray, instruction: str) -> np.ndarray:
+        """Run the VLM prefix encoder to produce prefix_kv for expert cross-attention.
+
+        Preprocesses the image (resize, normalize) and tokenizes the instruction,
+        then runs the VLM ONNX session. Returns prefix_kv [1, seq, vlm_kv_dim].
+        """
+        # --- Image preprocessing ---
+        vlm_image_size = self.config.get("vlm_image_size", [512, 512])
+        target_h, target_w = vlm_image_size[0], vlm_image_size[1]
+
+        # Resize using PIL if available, else use simple numpy resize
+        try:
+            from PIL import Image
+            img = Image.fromarray(image.astype(np.uint8)).convert("RGB")
+            img = img.resize((target_w, target_h), Image.BILINEAR)
+            image_array = np.array(img, dtype=np.float32) / 255.0
+        except ImportError:
+            # Fallback: crude resize via numpy (nearest neighbor via indexing)
+            h, w = image.shape[:2]
+            row_idx = (np.arange(target_h) * h // target_h).astype(int)
+            col_idx = (np.arange(target_w) * w // target_w).astype(int)
+            image_array = image[np.ix_(row_idx, col_idx)].astype(np.float32) / 255.0
+
+        # Add batch dim: [1, H, W, 3]
+        image_array = image_array.reshape(1, target_h, target_w, 3)
+
+        # --- Instruction tokenization ---
+        max_seq = 32
+        token_array = self._tokenize_instruction(instruction, max_seq=max_seq)
+
+        # --- Run VLM session ---
+        prefix_kv = self._vlm_session.run(
+            None,
+            {
+                "image": image_array,
+                "instruction_ids": token_array,
+            },
+        )[0]
+
+        return prefix_kv
+
+    def _tokenize_instruction(self, instruction: str, max_seq: int = 32) -> np.ndarray:
+        """Tokenize instruction text into int64 token IDs [1, max_seq].
+
+        Tries ``transformers.AutoTokenizer`` first for proper BPE tokenization.
+        Falls back to a simple ordinal encoding when transformers is not available.
+        """
+        try:
+            from transformers import AutoTokenizer
+
+            model_id = self.config.get("model_id", "HuggingFaceTB/SmolLM2-135M")
+            tokenizer = AutoTokenizer.from_pretrained(model_id)
+            encoded = tokenizer(
+                instruction,
+                max_length=max_seq,
+                padding="max_length",
+                truncation=True,
+                return_tensors="np",
+            )
+            return encoded["input_ids"].astype(np.int64)
+        except Exception:
+            # Fallback: simple ordinal encoding (each char → ord % 50257)
+            ids = [ord(c) % 50257 for c in instruction[:max_seq]]
+            # Pad to max_seq
+            ids = ids + [0] * (max_seq - len(ids))
+            return np.array([ids], dtype=np.int64)
+
     @property
     def ready(self) -> bool:
         return self._ready
 
-    def _run_denoise(self, noisy_actions: np.ndarray, position_ids: np.ndarray) -> tuple[np.ndarray, int]:
+    def _run_denoise(
+        self,
+        noisy_actions: np.ndarray,
+        position_ids: np.ndarray,
+        vlm_kv: np.ndarray | None = None,
+    ) -> tuple[np.ndarray, int]:
         """Run the full denoising loop (fixed or adaptive). Returns (actions, steps_used)."""
         dt = -1.0 / self.num_denoising_steps
         prev_velocity_norm: float | None = None
         converged_at: int | None = None
 
+        # Build the vlm_kv input for the expert session (if supported)
+        expert_has_vlm_kv = "vlm_kv" in self._expert_input_names
+        if expert_has_vlm_kv and vlm_kv is None:
+            # Expert expects vlm_kv but we have none — pass zeros of the right shape
+            vlm_kv_dim = self.config.get("vlm_kv_dim", 512)
+            prefix_seq_len = self.config.get("vlm_prefix_seq_len", 50)
+            batch = noisy_actions.shape[0]
+            vlm_kv = np.zeros((batch, prefix_seq_len, vlm_kv_dim), dtype=np.float32)
+
         for step in range(self.num_denoising_steps):
             t = 1.0 + step * dt
             timestep = np.array([t], dtype=np.float32)
 
-            velocity = self._ort_session.run(
-                None,
-                {
-                    "noisy_actions": noisy_actions,
-                    "timestep": timestep,
-                    "position_ids": position_ids,
-                },
-            )[0]
+            feed_dict = {
+                "noisy_actions": noisy_actions,
+                "timestep": timestep,
+                "position_ids": position_ids,
+            }
+            if expert_has_vlm_kv and vlm_kv is not None:
+                feed_dict["vlm_kv"] = vlm_kv
+
+            velocity = self._ort_session.run(None, feed_dict)[0]
 
             noisy_actions = noisy_actions + velocity * dt
 
@@ -376,8 +512,20 @@ class ReflexServer:
         ).astype(np.float32)
         position_ids = np.arange(self.chunk_size, dtype=np.int64).reshape(1, -1)
 
+        # VLM prefix conditioning
+        vlm_kv = None
+        used_vlm = False
+        if self._vlm_session is not None and image is not None and instruction:
+            try:
+                vlm_kv = self._run_vlm_prefix(image, instruction)
+                used_vlm = True
+            except Exception as e:
+                logger.warning("VLM prefix inference failed: %s — using dummy conditioning", e)
+                vlm_kv = None
+                used_vlm = False
+
         # Denoise (adaptive or fixed)
-        noisy_actions, steps_used = self._run_denoise(noisy_actions, position_ids)
+        noisy_actions, steps_used = self._run_denoise(noisy_actions, position_ids, vlm_kv=vlm_kv)
 
         actions_np = noisy_actions[0]  # [chunk, action_dim]
 
@@ -433,6 +581,7 @@ class ReflexServer:
             "hz": round(1000.0 / elapsed_ms, 1) if elapsed_ms > 0 else 0,
             "denoising_steps": steps_used,
             "inference_mode": self._inference_mode,
+            "vlm_conditioning": "real" if used_vlm else "dummy",
         }
         # Telemetry from wedges — only populate when flags are on
         if self._adaptive_steps:
@@ -680,6 +829,7 @@ try:
         model_loaded: bool
         inference_mode: str = ""
         export_dir: str = ""
+        vlm_loaded: bool = False
 
 except ImportError:
     PredictRequest = None  # type: ignore
@@ -763,6 +913,7 @@ def create_app(
             model_loaded=server.ready,
             inference_mode=getattr(server, "_inference_mode", ""),
             export_dir=str(server.export_dir),
+            vlm_loaded=getattr(server, "_vlm_loaded", False),
         )
 
     @app.post("/act")
