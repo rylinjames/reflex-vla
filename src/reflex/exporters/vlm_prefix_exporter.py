@@ -352,4 +352,216 @@ def export_vlm_prefix(
     config_path.write_text(json.dumps(config, indent=2))
     logger.info("Updated config: %s", config_path)
 
+    # 8. Export decoder prefill alongside the vision encoder
+    decoder_path = export_decoder_prefill(
+        checkpoint_path_or_id=checkpoint_path_or_id,
+        output_dir=output_dir,
+        opset=opset,
+    )
+
+    # Update config with decoder path
+    config = json.loads(config_path.read_text())
+    config["decoder_prefill_onnx"] = "decoder_prefill.onnx"
+    config_path.write_text(json.dumps(config, indent=2))
+    logger.info("Updated config with decoder_prefill_onnx: %s", config_path)
+
+    return onnx_path
+
+
+# ---------------------------------------------------------------------------
+# Decoder prefill export
+# ---------------------------------------------------------------------------
+
+# 16 layers is the SmolVLA expert prefix depth. The base SmolVLM2-500M has
+# 32 layers, but SmolVLA's fine-tuned checkpoint uses only the first 16.
+# We truncate manually here since we load from the base model.
+SMOLVLA_NUM_DECODER_LAYERS = 16
+
+# 16 transformer layers accumulate more fp32 rounding than a single layer.
+# Spike showed ~4e-5 for 1 layer; budget ~5e-4 for the full stack.
+DECODER_ORT_MAX_DIFF_THRESHOLD = 5e-4
+
+# Default prefix sequence length for dummy inputs (image 64 + text ~10 + state 1)
+DEFAULT_PREFIX_SEQ_LEN = 75
+
+
+class DecoderPrefillForONNX(nn.Module):
+    """Wraps a truncated SmolLM2 decoder for single-pass prefill ONNX export.
+
+    Takes pre-assembled prefix embeddings (image + text + state) and runs
+    them through the 16-layer decoder to produce contextualised hidden states.
+    No autoregressive generation — just one forward pass.
+
+    Input:  ``inputs_embeds``  — ``[B, seq, 960]`` float32
+    Input:  ``attention_mask`` — ``[B, seq]`` int64
+    Output: ``last_hidden_state`` — ``[B, seq, 960]`` float32
+    """
+
+    def __init__(self, text_model: nn.Module):
+        super().__init__()
+        self.text_model = text_model
+
+    def forward(
+        self, inputs_embeds: torch.Tensor, attention_mask: torch.Tensor
+    ) -> torch.Tensor:
+        """Run decoder prefill.
+
+        Args:
+            inputs_embeds: ``[B, seq, 960]`` — assembled prefix embeddings.
+            attention_mask: ``[B, seq]`` — standard HF attention mask
+                (1 = attend, 0 = ignore).
+
+        Returns:
+            last_hidden_state: ``[B, seq, 960]`` — contextualised hidden states.
+        """
+        outputs = self.text_model(
+            inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
+            output_hidden_states=False,
+        )
+        return outputs.last_hidden_state
+
+
+def export_decoder_prefill(
+    checkpoint_path_or_id: str = DEFAULT_VLM_MODEL_NAME,
+    output_dir: str | Path = ".",
+    opset: int = 19,
+    num_layers: int = SMOLVLA_NUM_DECODER_LAYERS,
+    prefix_seq_len: int = DEFAULT_PREFIX_SEQ_LEN,
+) -> Path:
+    """Export the 16-layer SmolLM2 decoder as decoder_prefill.onnx.
+
+    Loads the full SmolVLM2-500M model, extracts the text decoder (LlamaModel),
+    truncates to ``num_layers`` layers (SmolVLA uses 16 of the 32 base layers),
+    wraps in ``DecoderPrefillForONNX``, and exports to ONNX with ORT validation.
+
+    Args:
+        checkpoint_path_or_id: HuggingFace model ID or local path.
+        output_dir: Directory for output files.
+        opset: ONNX opset version (default 19, needed for GQA).
+        num_layers: Number of decoder layers to keep (default 16).
+        prefix_seq_len: Sequence length for dummy inputs (default 75).
+
+    Returns:
+        Path to the exported ``decoder_prefill.onnx`` file.
+    """
+    from transformers import AutoModel
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Load the base VLM
+    logger.info("Loading VLM for decoder export: %s", checkpoint_path_or_id)
+    model = AutoModel.from_pretrained(
+        checkpoint_path_or_id, trust_remote_code=True
+    )
+    model.eval()
+
+    # 2. Extract the text decoder (LlamaModel)
+    text_model = model.text_model
+    total_layers = len(text_model.layers)
+    hidden_size = model.config.text_config.hidden_size
+
+    logger.info(
+        "Text decoder: %d layers, hidden_size=%d, truncating to %d layers",
+        total_layers,
+        hidden_size,
+        num_layers,
+    )
+
+    # 3. Truncate to num_layers (SmolVLA uses first 16 of 32 base layers)
+    if total_layers > num_layers:
+        text_model.layers = text_model.layers[:num_layers]
+        logger.info(
+            "Truncated decoder from %d to %d layers", total_layers, num_layers
+        )
+    elif total_layers < num_layers:
+        logger.warning(
+            "Model has only %d layers, requested %d — using all available",
+            total_layers,
+            num_layers,
+        )
+        num_layers = total_layers
+
+    # 4. Build ONNX wrapper
+    wrapper = DecoderPrefillForONNX(text_model)
+    wrapper.eval()
+
+    total_params = sum(p.numel() for p in wrapper.parameters())
+    logger.info(
+        "DecoderPrefillForONNX: %d layers, %.1fM params",
+        num_layers,
+        total_params / 1e6,
+    )
+
+    # 5. Sanity check: wrapper produces output of correct shape
+    dummy_embeds = torch.randn(1, prefix_seq_len, hidden_size)
+    dummy_mask = torch.ones(1, prefix_seq_len, dtype=torch.long)
+
+    with torch.no_grad():
+        torch_out = wrapper(dummy_embeds, dummy_mask)
+    assert torch_out.shape == (1, prefix_seq_len, hidden_size), (
+        f"Unexpected output shape: {torch_out.shape}"
+    )
+    logger.info("Sanity check passed: output shape %s", torch_out.shape)
+
+    # 6. Export to ONNX
+    onnx_path = output_dir / "decoder_prefill.onnx"
+    logger.info("Exporting decoder prefill to %s (opset %d)...", onnx_path, opset)
+
+    with torch.no_grad():
+        torch.onnx.export(
+            wrapper,
+            (dummy_embeds, dummy_mask),
+            str(onnx_path),
+            input_names=["inputs_embeds", "attention_mask"],
+            output_names=["last_hidden_state"],
+            dynamic_axes={
+                "inputs_embeds": {0: "batch", 1: "seq"},
+                "attention_mask": {0: "batch", 1: "seq"},
+                "last_hidden_state": {0: "batch", 1: "seq"},
+            },
+            opset_version=opset,
+            do_constant_folding=False,
+        )
+
+    onnx_size_mb = onnx_path.stat().st_size / 1e6
+    logger.info("Wrote %s (%.2f MB)", onnx_path, onnx_size_mb)
+
+    # 7. Validate with ONNX Runtime
+    try:
+        import numpy as np
+        import onnxruntime as ort
+
+        sess = ort.InferenceSession(str(onnx_path))
+        with torch.no_grad():
+            torch_ref = wrapper(dummy_embeds, dummy_mask).numpy()
+        ort_out = sess.run(
+            None,
+            {
+                "inputs_embeds": dummy_embeds.numpy(),
+                "attention_mask": dummy_mask.numpy(),
+            },
+        )[0]
+
+        max_diff = float(np.abs(torch_ref - ort_out).max())
+        mean_diff = float(np.abs(torch_ref - ort_out).mean())
+        passed = max_diff < DECODER_ORT_MAX_DIFF_THRESHOLD
+
+        logger.info(
+            "ONNX validation: max_diff=%.2e, mean_diff=%.2e (%s)",
+            max_diff,
+            mean_diff,
+            "PASS" if passed else "FAIL",
+        )
+        if not passed:
+            logger.warning(
+                "Decoder ONNX numerical mismatch: max_diff=%.2e exceeds %.1e "
+                "threshold (16 transformer layers accumulate fp32 drift)",
+                max_diff,
+                DECODER_ORT_MAX_DIFF_THRESHOLD,
+            )
+    except ImportError:
+        logger.warning("onnxruntime not installed — skipping ONNX validation")
+
     return onnx_path

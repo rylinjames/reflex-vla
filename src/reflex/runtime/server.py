@@ -87,7 +87,7 @@ class ReflexServer:
         self.config = self._load_config()
         self.model = None
         self._ready = False
-        self._vlm_session = None
+        self._vlm = None
         self._vlm_loaded = False
         self._expert_input_names: list[str] = []
 
@@ -138,8 +138,8 @@ class ReflexServer:
         self._expert_input_names = [inp.name for inp in self._ort_session.get_inputs()]
         logger.info("Expert ONNX inputs: %s", self._expert_input_names)
 
-        # Load VLM prefix encoder if config specifies one
-        self._load_vlm_prefix()
+        # Load VLM prefix pipeline via orchestrator (4-file ONNX pipeline)
+        self._load_vlm_orchestrator()
 
         # ---- Wedge composition (Phase I.2) ----
         # reflex guard: safety limits
@@ -309,116 +309,49 @@ class ReflexServer:
         else:
             self._inference_mode = "onnx_cpu"
 
-    def _load_vlm_prefix(self) -> None:
-        """Load VLM prefix ONNX session if configured.
+    def _load_vlm_orchestrator(self) -> None:
+        """Load the 4-file VLM prefix pipeline via VLMPrefixOrchestrator.
 
-        Checks for ``vlm_prefix_onnx`` in reflex_config.json. If present,
-        loads the VLM prefix encoder as a CPU-only ORT session. If absent,
-        logs a warning and falls back to dummy conditioning (v0.1 mode).
+        Checks for VLM files (vision_encoder.onnx, text_embedder.onnx,
+        decoder_prefill.onnx) in the export directory. If at least the
+        vision encoder exists, creates a VLMPrefixOrchestrator. Otherwise
+        falls back to dummy conditioning (v0.1 mode).
         """
-        vlm_onnx_name = self.config.get("vlm_prefix_onnx")
-        if not vlm_onnx_name:
-            self._vlm_session = None
+        # Check if there are any VLM files to load
+        has_vlm_files = (
+            (self.export_dir / "vision_encoder.onnx").exists()
+            or self.config.get("vlm_prefix_onnx") is not None
+        )
+
+        if not has_vlm_files:
+            self._vlm = None
             self._vlm_loaded = False
-            logger.info("VLM prefix not found, using dummy conditioning (v0.1 mode)")
+            logger.info("No VLM files found, using dummy conditioning (v0.1 mode)")
             return
 
-        vlm_path = self.export_dir / vlm_onnx_name
-        if not vlm_path.exists():
-            self._vlm_session = None
+        try:
+            from reflex.runtime.vlm_orchestrator import VLMPrefixOrchestrator
+
+            self._vlm = VLMPrefixOrchestrator(self.export_dir, self.config)
+            self._vlm_loaded = self._vlm.is_loaded
+            if self._vlm_loaded:
+                logger.info(
+                    "VLM orchestrator loaded (complete=%s)",
+                    self._vlm.is_complete,
+                )
+            else:
+                logger.warning(
+                    "VLM orchestrator created but no sessions loaded -- "
+                    "falling back to dummy conditioning"
+                )
+                self._vlm = None
+                self._vlm_loaded = False
+        except Exception as e:
+            self._vlm = None
             self._vlm_loaded = False
             logger.warning(
-                "Config specifies vlm_prefix_onnx=%s but file not found at %s — "
-                "falling back to dummy conditioning",
-                vlm_onnx_name, vlm_path,
+                "Failed to create VLM orchestrator: %s -- using dummy conditioning", e
             )
-            return
-
-        try:
-            import onnxruntime as ort
-
-            # CPU-only for VLM prefix in v1
-            self._vlm_session = ort.InferenceSession(
-                str(vlm_path), providers=["CPUExecutionProvider"]
-            )
-            self._vlm_loaded = True
-            vlm_inputs = [inp.name for inp in self._vlm_session.get_inputs()]
-            vlm_outputs = [out.name for out in self._vlm_session.get_outputs()]
-            logger.info(
-                "Loaded VLM prefix encoder: %s (CPU) — inputs: %s, outputs: %s",
-                vlm_path.name, vlm_inputs, vlm_outputs,
-            )
-        except Exception as e:
-            self._vlm_session = None
-            self._vlm_loaded = False
-            logger.warning("Failed to load VLM prefix encoder: %s — using dummy conditioning", e)
-
-    def _run_vlm_prefix(self, image: np.ndarray, instruction: str) -> np.ndarray:
-        """Run the VLM prefix encoder to produce prefix_kv for expert cross-attention.
-
-        Preprocesses the image (resize, normalize) and tokenizes the instruction,
-        then runs the VLM ONNX session. Returns prefix_kv [1, seq, vlm_kv_dim].
-        """
-        # --- Image preprocessing ---
-        vlm_image_size = self.config.get("vlm_image_size", [512, 512])
-        target_h, target_w = vlm_image_size[0], vlm_image_size[1]
-
-        # Resize using PIL if available, else use simple numpy resize
-        try:
-            from PIL import Image
-            img = Image.fromarray(image.astype(np.uint8)).convert("RGB")
-            img = img.resize((target_w, target_h), Image.BILINEAR)
-            image_array = np.array(img, dtype=np.float32) / 255.0
-        except ImportError:
-            # Fallback: crude resize via numpy (nearest neighbor via indexing)
-            h, w = image.shape[:2]
-            row_idx = (np.arange(target_h) * h // target_h).astype(int)
-            col_idx = (np.arange(target_w) * w // target_w).astype(int)
-            image_array = image[np.ix_(row_idx, col_idx)].astype(np.float32) / 255.0
-
-        # Add batch dim: [1, H, W, 3]
-        image_array = image_array.reshape(1, target_h, target_w, 3)
-
-        # --- Instruction tokenization ---
-        max_seq = 32
-        token_array = self._tokenize_instruction(instruction, max_seq=max_seq)
-
-        # --- Run VLM session ---
-        prefix_kv = self._vlm_session.run(
-            None,
-            {
-                "image": image_array,
-                "instruction_ids": token_array,
-            },
-        )[0]
-
-        return prefix_kv
-
-    def _tokenize_instruction(self, instruction: str, max_seq: int = 32) -> np.ndarray:
-        """Tokenize instruction text into int64 token IDs [1, max_seq].
-
-        Tries ``transformers.AutoTokenizer`` first for proper BPE tokenization.
-        Falls back to a simple ordinal encoding when transformers is not available.
-        """
-        try:
-            from transformers import AutoTokenizer
-
-            model_id = self.config.get("model_id", "HuggingFaceTB/SmolLM2-135M")
-            tokenizer = AutoTokenizer.from_pretrained(model_id)
-            encoded = tokenizer(
-                instruction,
-                max_length=max_seq,
-                padding="max_length",
-                truncation=True,
-                return_tensors="np",
-            )
-            return encoded["input_ids"].astype(np.int64)
-        except Exception:
-            # Fallback: simple ordinal encoding (each char → ord % 50257)
-            ids = [ord(c) % 50257 for c in instruction[:max_seq]]
-            # Pad to max_seq
-            ids = ids + [0] * (max_seq - len(ids))
-            return np.array([ids], dtype=np.int64)
 
     @property
     def ready(self) -> bool:
@@ -512,15 +445,17 @@ class ReflexServer:
         ).astype(np.float32)
         position_ids = np.arange(self.chunk_size, dtype=np.int64).reshape(1, -1)
 
-        # VLM prefix conditioning
+        # VLM prefix conditioning via orchestrator
         vlm_kv = None
         used_vlm = False
-        if self._vlm_session is not None and image is not None and instruction:
+        state_np = np.array(state, dtype=np.float32) if state is not None else None
+        if self._vlm is not None and image is not None and instruction:
             try:
-                vlm_kv = self._run_vlm_prefix(image, instruction)
+                _state_for_vlm = state_np if state_np is not None else np.zeros(6, dtype=np.float32)
+                vlm_kv = self._vlm.run(image, instruction, _state_for_vlm)
                 used_vlm = True
             except Exception as e:
-                logger.warning("VLM prefix inference failed: %s — using dummy conditioning", e)
+                logger.warning("VLM orchestrator failed: %s — using dummy conditioning", e)
                 vlm_kv = None
                 used_vlm = False
 
