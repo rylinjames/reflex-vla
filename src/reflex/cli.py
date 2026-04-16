@@ -682,147 +682,49 @@ def models():
     console.print("\n[dim]Usage:[/dim] [cyan]reflex export <hf_id>[/cyan] — auto-detects model type.")
 
 
-@app.command()
+@app.command(hidden=True)
 def turbo(
-    strategy: str = typer.Option("adaptive", help="Strategy: fixed, adaptive, cuda_graph"),
-    action_dim: int = typer.Option(6, help="Action dimension to benchmark"),
-    chunk_size: int = typer.Option(10, help="Action chunk size"),
-    trials: int = typer.Option(5, help="Number of benchmark trials"),
     verbose: bool = typer.Option(False, help="Verbose logging"),
 ):
-    """Benchmark action-head denoising optimizations (Wedge 4).
-
-    Compares fixed-step vs adaptive denoising on a synthetic model to show
-    the latency headroom that flow-matching VLAs have.
-    """
-    _setup_logging(verbose)
-    from reflex.kernels.turbo import TurboOptimizer, TurboConfig
-    import torch
-    import torch.nn as nn
-
-    class _DummyModel(nn.Module):
-        def __init__(self, action_dim=6, hidden=64):
-            super().__init__()
-            self.net = nn.Sequential(
-                nn.Linear(action_dim + 1 + hidden, hidden),
-                nn.ReLU(),
-                nn.Linear(hidden, action_dim),
-            )
-            self.pos_embed = nn.Embedding(100, hidden)
-
-        def forward(self, noisy, timestep, pos_ids):
-            b, c, _ = noisy.shape
-            pos = self.pos_embed(pos_ids)
-            t = timestep.unsqueeze(1).unsqueeze(2).expand(b, c, 1)
-            return self.net(torch.cat([noisy, t, pos], dim=-1))
-
-    console.print(f"\n[bold]Reflex Turbo[/bold]")
-    console.print(f"  Strategy: {strategy}")
-    console.print(f"  action_dim={action_dim}, chunk_size={chunk_size}, trials={trials}")
-
-    model = _DummyModel(action_dim=action_dim, hidden=16)
-    optimizer = TurboOptimizer(TurboConfig(strategy=strategy))
-    results = optimizer.benchmark_strategies(
-        model, action_dim=action_dim, chunk_size=chunk_size, device="cpu", n_trials=trials,
+    """[DEPRECATED] Adaptive denoising now lives on `reflex serve --adaptive-steps`."""
+    console.print(
+        "[yellow]`reflex turbo` is deprecated and will be removed in v0.3.[/yellow]\n"
+        "[yellow]Adaptive denoising is now a flag on serve:[/yellow]\n"
+        "  [cyan]reflex serve <export> --adaptive-steps[/cyan]\n\n"
+        "[dim]Note: adaptive denoising only produces safe results on pi0.\n"
+        "For pi0.5/SmolVLA/GR00T, use `reflex distill` instead (v0.2+).[/dim]"
     )
-
-    table = Table(title="Turbo Benchmark")
-    table.add_column("Strategy", style="cyan")
-    table.add_column("Mean ms")
-    table.add_column("Steps used")
-    table.add_column("Converged early")
-    for name, runs in results.items():
-        mean_ms = sum(r.latency_ms for r in runs) / len(runs)
-        mean_steps = sum(r.steps_used for r in runs) / len(runs)
-        converged = sum(1 for r in runs if r.converged_early)
-        table.add_row(name, f"{mean_ms:.1f}", f"{mean_steps:.1f}", f"{converged}/{len(runs)}")
-    console.print(table)
+    raise typer.Exit(0)
 
 
-@app.command()
+@app.command(hidden=True)
 def split(
-    cloud_url: str = typer.Option("", help="Cloud inference URL (optional)"),
-    prefer: str = typer.Option("edge", help="Prefer: edge, cloud, auto"),
-    fallback_mode: str = typer.Option("last_action", help="Fallback: last_action, zero, edge_small"),
-    action_dim: int = typer.Option(6, help="Action dimension"),
-    chunk_size: int = typer.Option(50, help="Action chunk size"),
-    output: str = typer.Option("./split_config.json", help="Output path for config"),
     verbose: bool = typer.Option(False, help="Verbose logging"),
 ):
-    """Configure cloud-edge split inference orchestration (Wedge 5)."""
-    _setup_logging(verbose)
-    from reflex.runtime.split import SplitOrchestrator, SplitConfig, InferenceTarget
-
-    cfg = SplitConfig(
-        cloud_url=cloud_url,
-        prefer=prefer,
-        fallback_mode=fallback_mode,
+    """[DEPRECATED] Cloud-edge orchestration is now a flag on `reflex serve`."""
+    console.print(
+        "[yellow]`reflex split` is deprecated and will be removed in v0.3.[/yellow]\n"
+        "[yellow]Cloud-edge fallback is now a flag on serve:[/yellow]\n"
+        "  [cyan]reflex serve <export> --cloud-fallback <url>[/cyan]\n\n"
+        "[dim]Fewer than 10% of production deployments use cloud-edge split,\n"
+        "so a dedicated command was removed in favor of a flag.[/dim]"
     )
-    orch = SplitOrchestrator(cfg)
-    target = orch._select_target()
-
-    console.print(f"\n[bold]Reflex Split[/bold]")
-    console.print(f"  Cloud URL:       {cloud_url or '(none)'}")
-    console.print(f"  Prefer:          {prefer}")
-    console.print(f"  Fallback mode:   {fallback_mode}")
-    console.print(f"  Selected target: [cyan]{target.value}[/cyan]")
-
-    if target == InferenceTarget.FALLBACK:
-        fb = orch._get_fallback_actions(action_dim=action_dim, chunk_size=chunk_size)
-        console.print(f"  Fallback shape:  {fb.shape}")
-
-    import json
-    Path(output).write_text(json.dumps({
-        "cloud_url": cloud_url,
-        "prefer": prefer,
-        "fallback_mode": fallback_mode,
-        "selected_target": target.value,
-        "action_dim": action_dim,
-        "chunk_size": chunk_size,
-    }, indent=2))
-    console.print(f"\n[green]Split config saved: {output}[/green]")
+    raise typer.Exit(0)
 
 
-@app.command()
+@app.command(hidden=True)
 def adapt(
-    urdf: str = typer.Option("", help="URDF file path"),
-    name: str = typer.Option("generic_arm", help="Robot name (when no URDF)"),
-    num_joints: int = typer.Option(6, help="Number of joints (when no URDF)"),
-    source_dim: int = typer.Option(0, help="Source VLA action dim (0 = same as robot)"),
-    framework: str = typer.Option("lerobot", help="Target framework: lerobot, openpi, gr00t"),
-    output: str = typer.Option("./embodiment_config.json", help="Output path"),
     verbose: bool = typer.Option(False, help="Verbose logging"),
 ):
-    """Adapt a VLA to a new robot embodiment (Wedge 6)."""
-    _setup_logging(verbose)
-    from reflex.models.adapt import EmbodimentAdapter
-
-    if urdf:
-        adapter = EmbodimentAdapter.from_urdf(urdf)
-        console.print(f"[green]Loaded URDF: {urdf}[/green]")
-    else:
-        adapter = EmbodimentAdapter.default(name, num_joints)
-        console.print(f"[yellow]Using default {num_joints}-joint embodiment[/yellow]")
-
-    console.print(f"\n[bold]Reflex Adapt[/bold]")
-    console.print(f"  Robot:        {adapter.config.name}")
-    console.print(f"  Joints:       {adapter.config.num_joints}")
-    console.print(f"  Action dim:   {adapter.config.action_dim}")
-    console.print(f"  Framework:    {framework}")
-
-    # Action mapping if source dim specified
-    src = source_dim or adapter.config.action_dim
-    mapping = adapter.create_mapping(source_dim=src)
-    console.print(f"\n  Action mapping: [cyan]{mapping.mapping_type}[/cyan] "
-                  f"({src}-dim source → {adapter.config.action_dim}-dim target)")
-
-    # Framework config
-    fw_config = adapter.generate_framework_config(framework)
-    adapter.config.save(output)
-    console.print(f"\n[green]Embodiment config saved: {output}[/green]")
-    console.print(f"[dim]Framework config summary:[/dim]")
-    for k, v in list(fw_config.items())[:5]:
-        console.print(f"  {k}: {v}")
+    """[DEPRECATED] Velocity clamping folded into `reflex guard`. Cross-embodiment archived."""
+    console.print(
+        "[yellow]`reflex adapt` is deprecated and will be removed in v0.3.[/yellow]\n"
+        "[yellow]Velocity/torque limits are now part of `reflex guard`:[/yellow]\n"
+        "  [cyan]reflex guard init --urdf <file> --output ./safety.json[/cyan]\n\n"
+        "[dim]Cross-embodiment action remapping had no users; archived in\n"
+        "reflex_context/06_archive/. Open an issue if you need it back.[/dim]"
+    )
+    raise typer.Exit(0)
 
 
 @app.command()
