@@ -32,8 +32,8 @@ image = (
     .run_commands(
         "git clone https://github.com/Lifelong-Robot-Learning/LIBERO.git /opt/LIBERO"
         " && cd /opt/LIBERO && pip install -e ."
-        # Patch: replace any `= input(...)` with env var fallback
-        " && sed -i 's/= input(.*/= os.environ.get(\"LIBERO_SUITE_DIR\", \"\\/tmp\\/libero_data\")/' /opt/LIBERO/libero/libero/__init__.py"
+        # Patch: replace ALL input() calls with "n" (decline custom path, use defaults)
+        " && sed -i 's/input([^)]*)/\"n\"/g' /opt/LIBERO/libero/libero/__init__.py"
         " && python -c 'from libero.libero import benchmark; print(\"LIBERO import OK\")'"
     )
     .add_local_dir("src/reflex", "/root/reflex-vla/src/reflex", copy=True)
