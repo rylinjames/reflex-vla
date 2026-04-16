@@ -115,11 +115,10 @@ class VLMPrefixOrchestrator:
 
     def _load_tokenizer_and_processor(self) -> None:
         """Cache AutoTokenizer and AutoProcessor at init time."""
+        # Use vlm_model_id (the base VLM) for tokenizer/processor, NOT model_id
+        # (which is the SmolVLA policy checkpoint and doesn't have a tokenizer).
         model_id = self.config.get(
-            "vlm_model_id",
-            self.config.get(
-                "model_id", "HuggingFaceTB/SmolVLM2-500M-Video-Instruct"
-            ),
+            "vlm_model_id", "HuggingFaceTB/SmolVLM2-500M-Video-Instruct"
         )
 
         try:
@@ -359,8 +358,9 @@ class VLMPrefixOrchestrator:
             return text_embeds
 
         if self._tokenizer is not None:
-            # Have tokenizer but no text_embedder ONNX -- produce a
-            # random embedding (better than nothing for testing)
+            # Have tokenizer but no text_embedder ONNX — produce a
+            # deterministic embedding seeded by the token IDs so the same
+            # instruction always maps to the same embedding.
             encoded = self._tokenizer(
                 instruction,
                 max_length=max_seq,
@@ -368,15 +368,20 @@ class VLMPrefixOrchestrator:
                 truncation=True,
                 return_tensors="np",
             )
-            seq_len = encoded["input_ids"].shape[1]
-            return np.random.randn(1, seq_len, self._hidden_size).astype(
+            input_ids = encoded["input_ids"].astype(np.int64)
+            seq_len = input_ids.shape[1]
+            seed = int(input_ids.sum()) % (2**31)
+            rng = np.random.RandomState(seed)
+            return rng.randn(1, seq_len, self._hidden_size).astype(
                 np.float32
             ) * 0.02
 
-        # Fallback: ordinal encoding -> random embedding
+        # Fallback: ordinal encoding → deterministic embedding seeded by text
         ids = [ord(c) % 50257 for c in instruction[:max_seq]]
         ids = ids + [0] * (max_seq - len(ids))
-        return np.random.randn(1, max_seq, self._hidden_size).astype(
+        seed = sum(ids) % (2**31)
+        rng = np.random.RandomState(seed)
+        return rng.randn(1, max_seq, self._hidden_size).astype(
             np.float32
         ) * 0.02
 

@@ -347,6 +347,7 @@ def export_vlm_prefix(
     config["vlm_image_size"] = [image_size, image_size]
     config["vlm_kv_dim"] = vlm_kv_dim
     config["vlm_prefix_onnx"] = "vision_encoder.onnx"
+    config["vlm_model_id"] = checkpoint_path_or_id
     config["export_version"] = "0.3"
 
     config_path.write_text(json.dumps(config, indent=2))
