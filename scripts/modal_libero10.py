@@ -15,35 +15,17 @@ import modal
 
 app = modal.App("reflex-libero10")
 
-# Heavy image: MuJoCo + EGL + vla-eval + reflex
+# Image: MuJoCo + vla-eval + reflex on debian_slim (reliable)
 image = (
-    modal.Image.from_registry(
-        "nvidia/cuda:12.1.1-runtime-ubuntu22.04", add_python="3.11"
-    )
-    .apt_install(
-        "git", "wget", "libgl1-mesa-glx", "libglib2.0-0",
-        "libegl1-mesa", "libegl1-mesa-dev", "libgles2-mesa-dev",
-        "libglvnd0", "libglvnd-dev", "mesa-utils",
-        "ffmpeg", "patchelf",
-    )
+    modal.Image.debian_slim(python_version="3.11")
+    .apt_install("git", "libgl1-mesa-glx", "libglib2.0-0",
+                 "libegl1-mesa", "libglvnd0", "ffmpeg")
     .pip_install(
-        "torch",
-        "safetensors",
-        "huggingface_hub",
-        "transformers>=4.51",
-        "onnx",
-        "onnxruntime",
-        "onnxscript",
-        "numpy",
-        "Pillow",
-        "pydantic>=2.0",
-        "fastapi>=0.100.0",
-        "uvicorn>=0.23.0",
-        "typer",
-        "rich",
-        "pyyaml",
-        "mujoco>=3.0",
-        "gymnasium",
+        "torch", "safetensors", "huggingface_hub", "transformers>=4.51",
+        "onnx", "onnxruntime", "onnxscript", "numpy", "Pillow",
+        "pydantic>=2.0", "fastapi>=0.100.0", "uvicorn>=0.23.0",
+        "typer", "rich", "pyyaml",
+        "mujoco>=3.0", "gymnasium",
     )
     .pip_install("vla-eval")
     .add_local_dir("src/reflex", "/root/reflex-vla/src/reflex", copy=True)
