@@ -32,8 +32,16 @@ image = (
     .run_commands(
         "git clone https://github.com/Lifelong-Robot-Learning/LIBERO.git /opt/LIBERO"
         " && cd /opt/LIBERO && pip install -e ."
-        # Patch: replace ALL input() calls with "n" (decline custom path, use defaults)
-        " && sed -i 's/input([^)]*)/\"n\"/g' /opt/LIBERO/libero/libero/__init__.py"
+        # Patch: replace ALL input() calls in LIBERO's __init__.py with "n"
+        ' && python3 -c "'
+        "import re, pathlib;"
+        "p = pathlib.Path('/opt/LIBERO/libero/libero/__init__.py');"
+        "t = p.read_text();"
+        "t = re.sub(r'input\\([^)]*\\)', '\"n\"', t);"  # input("prompt") -> "n"
+        "t = re.sub(r'input\\(\\)', '\"n\"', t);"  # input() -> "n"
+        "p.write_text(t);"
+        "print('Patched', t.count('\"n\"'), 'input calls')"
+        '"'
         " && python -c 'from libero.libero import benchmark; print(\"LIBERO import OK\")'"
     )
     .add_local_dir("src/reflex", "/root/reflex-vla/src/reflex", copy=True)
