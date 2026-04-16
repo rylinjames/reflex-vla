@@ -279,14 +279,37 @@ def run_trajectory_replay():
             expert_action = np.array(ep["actions"][step_i], dtype=np.float32)
 
             # Encode image to base64
-            if isinstance(img, Image.Image):
-                pil_img = img
-            elif isinstance(img, np.ndarray):
-                pil_img = Image.fromarray(img)
-            elif isinstance(img, dict) and "bytes" in img:
-                pil_img = Image.open(io.BytesIO(img["bytes"]))
-            else:
-                # Skip frames we can't decode
+            if step_i == step_indices[0]:
+                print(f"  Frame type: {type(img).__name__}, keys: {list(img.keys()) if isinstance(img, dict) else 'N/A'}")
+                if hasattr(img, 'shape'):
+                    print(f"  Frame shape: {img.shape}, dtype: {img.dtype}")
+                if hasattr(img, 'size'):
+                    print(f"  Frame size: {img.size}")
+
+            try:
+                if isinstance(img, Image.Image):
+                    pil_img = img
+                elif isinstance(img, np.ndarray):
+                    if img.dtype == np.float32 or img.dtype == np.float64:
+                        img = (img * 255).clip(0, 255).astype(np.uint8)
+                    pil_img = Image.fromarray(img)
+                elif isinstance(img, dict) and "bytes" in img:
+                    pil_img = Image.open(io.BytesIO(img["bytes"]))
+                elif isinstance(img, dict) and "path" in img:
+                    pil_img = Image.open(img["path"])
+                elif hasattr(img, 'numpy'):
+                    # torch.Tensor
+                    arr = img.numpy()
+                    if arr.ndim == 3 and arr.shape[0] in (1, 3):
+                        arr = arr.transpose(1, 2, 0)
+                    if arr.dtype == np.float32 or arr.dtype == np.float64:
+                        arr = (arr * 255).clip(0, 255).astype(np.uint8)
+                    pil_img = Image.fromarray(arr)
+                else:
+                    print(f"  SKIP: unsupported image type {type(img).__name__}")
+                    continue
+            except Exception as img_err:
+                print(f"  SKIP: image decode error: {img_err}")
                 continue
 
             buf = io.BytesIO()
