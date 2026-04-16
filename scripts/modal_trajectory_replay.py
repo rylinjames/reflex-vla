@@ -1,8 +1,8 @@
 """Trajectory replay smoke test for Reflex VLA on Modal.
 
-Downloads episodes from a LeRobot dataset on HuggingFace, feeds each
-observation frame through a reflex serve endpoint, and compares predicted
-actions to expert ground truth via L2 error.
+Downloads episodes from a LeRobot dataset using LeRobot's native loader
+(handles video-encoded images), feeds each observation frame through a
+reflex serve endpoint, and compares predicted actions to expert ground truth.
 
 Usage:
     modal run scripts/modal_trajectory_replay.py
@@ -18,7 +18,7 @@ app = modal.App("reflex-trajectory-replay")
 
 image = (
     modal.Image.debian_slim(python_version="3.12")
-    .apt_install("git", "libgl1-mesa-glx", "libglib2.0-0")
+    .apt_install("git", "libgl1-mesa-glx", "libglib2.0-0", "ffmpeg")
     .pip_install(
         "torch",
         "safetensors",
@@ -36,7 +36,7 @@ image = (
         "typer",
         "rich",
         "pyyaml",
-        "datasets",
+        "lerobot",
     )
     .add_local_dir("src/reflex", "/root/reflex-vla/src/reflex", copy=True)
     .add_local_file("pyproject.toml", "/root/reflex-vla/pyproject.toml", copy=True)
@@ -44,7 +44,6 @@ image = (
     .run_commands("cd /root/reflex-vla && pip install -e .")
 )
 
-# Pass/fail threshold
 L2_THRESHOLD = 2.0
 NUM_EPISODES = 5
 
@@ -74,303 +73,200 @@ def run_trajectory_replay():
         tag = "PASS" if status == "pass" else "FAIL" if status == "fail" else "INFO"
         print(f"{tag}: {name} -- {detail}")
 
-    # ── Step 1: Export SmolVLA via `reflex export` ──────────────────
+    # ── Step 1: Export SmolVLA ─────────────────────────────────────
     print("\n=== Step 1: Export SmolVLA ===")
     export_dir = "/tmp/reflex_traj_export"
     t0 = time.time()
     r = subprocess.run(
-        [
-            "reflex", "export", "lerobot/smolvla_base",
-            "--target", "desktop",
-            "--output", export_dir,
-            "--verbose",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=600,
+        ["reflex", "export", "lerobot/smolvla_base",
+         "--target", "desktop", "--output", export_dir, "--verbose"],
+        capture_output=True, text=True, timeout=600,
     )
     elapsed = time.time() - t0
     if r.returncode == 0:
         log("export", "pass", f"SmolVLA exported in {elapsed:.1f}s")
     else:
         log("export", "fail", (r.stdout + r.stderr)[-500:])
-        results["pass"] = False
         return results
 
-    # Verify export files
-    import os
     from pathlib import Path
-
-    export_path = Path(export_dir)
-    files = list(export_path.iterdir())
+    files = list(Path(export_dir).iterdir())
     log("export_files", "pass", f"{len(files)} files: {[f.name for f in files]}")
 
-    # ── Step 2: Start reflex serve in background ────────────────────
+    # ── Step 2: Start reflex serve ─────────────────────────────────
     print("\n=== Step 2: Start reflex serve ===")
     serve_port = 8321
     serve_proc = subprocess.Popen(
-        [
-            "reflex", "serve", export_dir,
-            "--port", str(serve_port),
-            "--device", "cpu",
-            "--no-strict-providers",
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
+        ["reflex", "serve", export_dir, "--port", str(serve_port),
+         "--device", "cpu", "--no-strict-providers"],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
     )
 
-    # Collect server logs in background thread
     server_log_lines = []
-
-    def _drain_stdout():
+    def _drain():
         for line in serve_proc.stdout:
             server_log_lines.append(line.rstrip())
+    threading.Thread(target=_drain, daemon=True).start()
 
-    log_thread = threading.Thread(target=_drain_stdout, daemon=True)
-    log_thread.start()
-
-    # Wait for server to be ready (poll /health)
     server_ready = False
     for attempt in range(60):
         time.sleep(2)
         try:
             resp = httpx.get(f"http://127.0.0.1:{serve_port}/health", timeout=5)
-            if resp.status_code == 200:
-                health = resp.json()
-                if health.get("model_loaded"):
-                    server_ready = True
-                    break
+            if resp.status_code == 200 and resp.json().get("model_loaded"):
+                server_ready = True
+                break
         except Exception:
             pass
 
     if server_ready:
-        log("serve_ready", "pass", f"Server ready after {(attempt + 1) * 2}s")
+        log("serve_ready", "pass", f"Server ready after {(attempt+1)*2}s")
     else:
-        # Dump last server logs for debugging
-        for line in server_log_lines[-30:]:
+        for line in server_log_lines[-20:]:
             print(f"  [server] {line}")
-        log("serve_ready", "fail", "Server did not become ready in 120s")
+        log("serve_ready", "fail", "Server not ready in 120s")
         serve_proc.terminate()
-        results["pass"] = False
         return results
 
-    # ── Step 3: Download dataset episodes ───────────────────────────
-    print("\n=== Step 3: Download dataset episodes ===")
-    try:
-        from datasets import load_dataset
-
-        # lerobot/pusht is small, has image observations + actions.
-        # Try it first, fall back to pusht.
-        dataset = None
-        dataset_name = None
-        for candidate in [
-            "lerobot/pusht",
-            "lerobot/pusht",
-        ]:
-            try:
-                print(f"  Trying {candidate}...")
-                dataset = load_dataset(candidate, split="train", streaming=True)
-                dataset_name = candidate
-                break
-            except Exception as e:
-                print(f"  {candidate} failed: {e}")
-                continue
-
-        if dataset is None:
-            log("dataset", "fail", "Could not load any candidate dataset")
-            serve_proc.terminate()
-            results["pass"] = False
-            return results
-
-        log("dataset", "pass", f"Loaded {dataset_name} (streaming)")
-    except Exception as e:
-        log("dataset", "fail", str(e))
-        serve_proc.terminate()
-        results["pass"] = False
-        return results
-
-    # ── Step 4: Group into episodes and replay ──────────────────────
-    print("\n=== Step 4: Replay episodes ===")
-
-    # Collect frames grouped by episode
-    # LeRobot datasets have "episode_index", "observation.image" (or similar),
-    # and "action" columns.
+    # ── Step 3: Load dataset via LeRobot native loader ─────────────
+    print("\n=== Step 3: Load dataset via LeRobotDataset ===")
     episodes = {}
-    frames_seen = 0
-    max_frames = 500  # cap total frames to keep runtime reasonable
-
     try:
-        first_sample_logged = False
-        for sample in dataset:
-            if frames_seen >= max_frames:
-                break
+        from lerobot.common.datasets.lerobot_dataset import LeRobotDataset
 
-            if not first_sample_logged:
-                print(f"  Dataset columns: {list(sample.keys())}")
-                for k, v in sample.items():
-                    vtype = type(v).__name__
-                    vinfo = ""
-                    if hasattr(v, 'shape'):
-                        vinfo = f" shape={v.shape}"
-                    elif hasattr(v, 'size'):
-                        vinfo = f" size={v.size}"
-                    elif isinstance(v, (list, tuple)):
-                        vinfo = f" len={len(v)}"
-                    print(f"    {k}: {vtype}{vinfo}")
-                first_sample_logged = True
+        dataset_name = "lerobot/pusht"
+        print(f"  Loading {dataset_name}...")
+        lr_dataset = LeRobotDataset(dataset_name)
+        print(f"  Total frames: {len(lr_dataset)}")
 
+        sample0 = lr_dataset[0]
+        print(f"  Sample keys: {list(sample0.keys())}")
+        for k, v in sample0.items():
+            info = f" shape={v.shape} dtype={v.dtype}" if hasattr(v, 'shape') else ""
+            print(f"    {k}: {type(v).__name__}{info}")
+
+        # Collect frames
+        frames_seen = 0
+        max_frames = 500
+
+        for idx in range(min(len(lr_dataset), max_frames)):
+            sample = lr_dataset[idx]
             ep_idx = sample.get("episode_index", 0)
+            if hasattr(ep_idx, 'item'):
+                ep_idx = ep_idx.item()
+
             if len(episodes) >= NUM_EPISODES and ep_idx not in episodes:
                 continue
-
             if ep_idx not in episodes:
                 episodes[ep_idx] = {"frames": [], "actions": []}
 
-            # Extract image -- LeRobot v2 uses "observation.images.top" (PIL Image)
-            # LeRobot v1 uses "observation.image"
-            # Some datasets nest under observation.images.{camera_name}
+            # Find image
             img = None
-            for img_key in [
-                "observation.images.top",
-                "observation.images.front",
-                "observation.images.wrist",
-                "observation.image",
-                "observation.images.laptop",
-                "observation.images.phone",
-                "image",
-                "pixel_values",
-            ]:
+            for img_key in ["observation.images.top", "observation.image",
+                            "observation.images.front", "observation.images.wrist"]:
                 if img_key in sample and sample[img_key] is not None:
                     img = sample[img_key]
                     break
-
-            # If still None, try any key containing "image"
             if img is None:
-                for k, v in sample.items():
-                    if "image" in k.lower() and v is not None:
-                        img = v
-                        if not first_sample_logged:
-                            print(f"  Found image in fallback key: {k}")
-                        break
-
-            if img is None:
-                # Try to find any key with "image" in the name
                 for k, v in sample.items():
                     if "image" in k.lower() and v is not None:
                         img = v
                         break
 
-            # Extract action
+            # Find action
             action = sample.get("action", None)
             if action is None:
                 continue
-
             if hasattr(action, "tolist"):
                 action = action.tolist()
-            elif isinstance(action, (list, tuple)):
-                action = list(action)
-            else:
-                action = [float(action)]
 
             episodes[ep_idx]["frames"].append(img)
             episodes[ep_idx]["actions"].append(action)
             frames_seen += 1
 
-        log("collect", "pass", f"{len(episodes)} episodes, {frames_seen} total frames")
+        log("dataset", "pass", f"Loaded {dataset_name}: {len(episodes)} episodes, {frames_seen} frames")
+
     except Exception as e:
-        log("collect", "fail", str(e)[:300])
+        log("dataset", "fail", str(e)[:500])
         serve_proc.terminate()
-        results["pass"] = False
         return results
 
-    if len(episodes) == 0:
+    if not episodes:
         log("replay", "fail", "No episodes collected")
         serve_proc.terminate()
-        results["pass"] = False
         return results
 
-    # ── Step 5: Replay each episode through /act ────────────────────
-    print("\n=== Step 5: Compute L2 errors ===")
+    # Check if we actually got images
+    first_ep = list(episodes.values())[0]
+    first_frame = first_ep["frames"][0] if first_ep["frames"] else None
+    if first_frame is None:
+        log("replay", "fail", "Frames are all None — dataset has no image observations")
+        serve_proc.terminate()
+        return results
+
+    print(f"  First frame type: {type(first_frame).__name__}")
+    if hasattr(first_frame, 'shape'):
+        print(f"  First frame shape: {first_frame.shape}")
+
+    # ── Step 4: Replay episodes through /act ───────────────────────
+    print("\n=== Step 4: Replay through /act ===")
     all_l2_errors = []
-    instruction = "pick up the object"  # generic instruction
+    instruction = "push the T block"
 
     for ep_idx in sorted(episodes.keys())[:NUM_EPISODES]:
         ep = episodes[ep_idx]
         ep_l2_errors = []
         num_frames = len(ep["frames"])
-        # Sample up to 10 frames per episode to keep it fast
         step_indices = list(range(0, num_frames, max(1, num_frames // 10)))[:10]
 
         for step_i in step_indices:
             img = ep["frames"][step_i]
             expert_action = np.array(ep["actions"][step_i], dtype=np.float32)
 
-            # Encode image to base64
-            if step_i == step_indices[0]:
-                print(f"  Frame type: {type(img).__name__}, keys: {list(img.keys()) if isinstance(img, dict) else 'N/A'}")
-                if hasattr(img, 'shape'):
-                    print(f"  Frame shape: {img.shape}, dtype: {img.dtype}")
-                if hasattr(img, 'size'):
-                    print(f"  Frame size: {img.size}")
-
+            # Convert to PIL
             try:
                 if isinstance(img, Image.Image):
                     pil_img = img
                 elif isinstance(img, np.ndarray):
-                    if img.dtype == np.float32 or img.dtype == np.float64:
+                    if img.dtype in (np.float32, np.float64):
                         img = (img * 255).clip(0, 255).astype(np.uint8)
                     pil_img = Image.fromarray(img)
-                elif isinstance(img, dict) and "bytes" in img:
-                    pil_img = Image.open(io.BytesIO(img["bytes"]))
-                elif isinstance(img, dict) and "path" in img:
-                    pil_img = Image.open(img["path"])
                 elif hasattr(img, 'numpy'):
-                    # torch.Tensor
                     arr = img.numpy()
                     if arr.ndim == 3 and arr.shape[0] in (1, 3):
                         arr = arr.transpose(1, 2, 0)
-                    if arr.dtype == np.float32 or arr.dtype == np.float64:
+                    if arr.dtype in (np.float32, np.float64):
                         arr = (arr * 255).clip(0, 255).astype(np.uint8)
                     pil_img = Image.fromarray(arr)
+                elif isinstance(img, dict) and "bytes" in img:
+                    pil_img = Image.open(io.BytesIO(img["bytes"]))
                 else:
-                    print(f"  SKIP: unsupported image type {type(img).__name__}")
                     continue
-            except Exception as img_err:
-                print(f"  SKIP: image decode error: {img_err}")
+            except Exception:
                 continue
 
             buf = io.BytesIO()
             pil_img.convert("RGB").resize((224, 224)).save(buf, format="PNG")
             img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
 
-            # POST /act
             try:
                 resp = httpx.post(
                     f"http://127.0.0.1:{serve_port}/act",
-                    json={
-                        "image": img_b64,
-                        "instruction": instruction,
-                        "state": [0.0] * 6,
-                    },
+                    json={"image": img_b64, "instruction": instruction, "state": [0.0] * 6},
                     timeout=30,
                 )
                 result = resp.json()
-
                 if "error" in result:
-                    print(f"  /act error at ep={ep_idx} step={step_i}: {result['error']}")
+                    print(f"  /act error ep={ep_idx} step={step_i}: {result['error']}")
                     continue
 
                 pred_actions = np.array(result["actions"], dtype=np.float32)
-                # Compare first action in chunk to expert action
-                # Expert action dim may differ from model output dim; truncate to min
                 pred_first = pred_actions[0]
                 min_dim = min(len(pred_first), len(expert_action))
                 l2 = float(np.linalg.norm(pred_first[:min_dim] - expert_action[:min_dim]))
                 ep_l2_errors.append(l2)
             except Exception as e:
-                print(f"  /act failed at ep={ep_idx} step={step_i}: {e}")
-                continue
+                print(f"  /act failed ep={ep_idx} step={step_i}: {e}")
 
         if ep_l2_errors:
             ep_mean = float(np.mean(ep_l2_errors))
@@ -382,12 +278,9 @@ def run_trajectory_replay():
                 "max_l2": round(ep_max, 4),
             })
             all_l2_errors.extend(ep_l2_errors)
-            print(
-                f"  Episode {ep_idx}: {len(ep_l2_errors)} steps, "
-                f"mean_L2={ep_mean:.4f}, max_L2={ep_max:.4f}"
-            )
+            print(f"  Episode {ep_idx}: {len(ep_l2_errors)} steps, mean_L2={ep_mean:.4f}, max_L2={ep_max:.4f}")
 
-    # ── Step 6: Report ──────────────────────────────────────────────
+    # ── Step 5: Report ─────────────────────────────────────────────
     print("\n" + "=" * 60)
     print("TRAJECTORY REPLAY RESULTS")
     print("=" * 60)
@@ -401,55 +294,39 @@ def run_trajectory_replay():
         print(f"\n{'Episode':<12} {'Steps':<8} {'Mean L2':<12} {'Max L2':<12}")
         print("-" * 44)
         for ep in results["episodes"]:
-            print(
-                f"{ep['episode_index']:<12} {ep['num_steps']:<8} "
-                f"{ep['mean_l2']:<12.4f} {ep['max_l2']:<12.4f}"
-            )
+            print(f"{ep['episode_index']:<12} {ep['num_steps']:<8} {ep['mean_l2']:<12.4f} {ep['max_l2']:<12.4f}")
         print("-" * 44)
-        print(
-            f"{'TOTAL':<12} {len(all_l2_errors):<8} "
-            f"{mean_l2:<12.4f} {max_l2:<12.4f}"
-        )
+        print(f"{'TOTAL':<12} {len(all_l2_errors):<8} {mean_l2:<12.4f} {max_l2:<12.4f}")
 
-        print(f"\nThreshold: mean L2 < {L2_THRESHOLD}")
         if mean_l2 < L2_THRESHOLD:
-            print("RESULT: PASS")
+            print(f"\nRESULT: PASS (mean L2 {mean_l2:.4f} < {L2_THRESHOLD})")
             results["pass"] = True
-            log("trajectory_replay", "pass", f"mean_L2={mean_l2:.4f} < {L2_THRESHOLD}")
+            log("trajectory_replay", "pass", f"mean_L2={mean_l2:.4f}")
         else:
-            print("RESULT: FAIL")
-            results["pass"] = False
-            log(
-                "trajectory_replay",
-                "fail",
-                f"mean_L2={mean_l2:.4f} >= {L2_THRESHOLD}",
-            )
+            print(f"\nRESULT: FAIL (mean L2 {mean_l2:.4f} >= {L2_THRESHOLD})")
+            log("trajectory_replay", "fail", f"mean_L2={mean_l2:.4f}")
     else:
-        print("No L2 errors computed -- no frames were successfully replayed")
-        results["pass"] = False
+        print("No frames replayed successfully")
         log("trajectory_replay", "fail", "No frames replayed")
 
-    # Cleanup
     serve_proc.terminate()
     serve_proc.wait(timeout=10)
-
     return results
 
 
 @app.local_entrypoint()
 def main():
-    """Run trajectory replay and report results."""
-    print("Starting trajectory replay smoke test on Modal (A10G)...")
+    print("Starting trajectory replay on Modal (A10G)...")
     result = run_trajectory_replay.remote()
 
     print("\n" + "=" * 60)
-    print("LOCAL SUMMARY")
+    print("SUMMARY")
     print("=" * 60)
     print(json.dumps(result, indent=2))
 
     if result.get("pass"):
-        print("\nSMOKE TEST PASSED")
+        print("\nTRAJECTORY REPLAY: PASS")
         sys.exit(0)
     else:
-        print("\nSMOKE TEST FAILED")
+        print("\nTRAJECTORY REPLAY: FAIL")
         sys.exit(1)
