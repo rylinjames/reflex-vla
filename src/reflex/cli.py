@@ -407,13 +407,24 @@ def benchmark_cmd(
     iterations: int = typer.Option(100, help="Number of benchmark iterations"),
     warmup: int = typer.Option(20, help="Warmup iterations (excluded from stats)"),
     device: str = typer.Option("cuda", help="Device: cuda or cpu"),
+    benchmark: str = typer.Option(
+        "",
+        "--benchmark",
+        help="Also run task-success eval: libero_10, simpler, maniskill (requires pip install 'reflex-vla[eval]')",
+    ),
+    episodes_per_task: int = typer.Option(
+        10, help="Episodes per task for --benchmark (full suites use 50)"
+    ),
     verbose: bool = typer.Option(False, help="Verbose logging"),
 ):
-    """Benchmark exported model latency end-to-end (denoising loop on actual hardware).
+    """Benchmark exported model — latency (default) and optional task success.
 
-    Loads the export, warms up, runs N iterations of the full denoising loop,
-    reports mean/p50/p95/p99 latency. Use this to verify your install is fast
-    before pointing a real robot at the server.
+    Default: loads the export, warms up, runs N iterations of the denoising loop,
+    reports mean/p50/p95/p99 latency.
+
+    With --benchmark <suite>: also runs task-success evaluation on the named
+    simulation benchmark (LIBERO-10, SimplerEnv, ManiSkill). Requires the
+    [eval] extra — sim dependencies are not in the base install.
     """
     _setup_logging(verbose)
     import time as _t
@@ -429,11 +440,30 @@ def benchmark_cmd(
         console.print(f"[red]No ONNX file in {export_dir}[/red]")
         raise typer.Exit(1)
 
+    # If --benchmark was requested, gate on the eval extra being installed
+    if benchmark:
+        try:
+            import vla_eval  # noqa: F401
+        except ImportError:
+            console.print(
+                f"[red]--benchmark {benchmark} requires the eval extra.[/red]\n"
+                f"  Install with: [cyan]pip install 'reflex-vla[eval]'[/cyan]\n"
+                f"  Or run without --benchmark for latency-only.",
+            )
+            raise typer.Exit(2)
+        valid = ("libero_10", "libero_spatial", "libero_object", "libero_goal",
+                 "libero_long", "simpler", "maniskill")
+        if benchmark not in valid:
+            console.print(f"[red]Unknown benchmark '{benchmark}'. Try one of: {', '.join(valid)}[/red]")
+            raise typer.Exit(2)
+
     console.print(f"\n[bold]Reflex Benchmark[/bold]")
     console.print(f"  Export:    {export_dir}")
     console.print(f"  Device:    {device}")
     console.print(f"  Warmup:    {warmup}")
     console.print(f"  Iterations: {iterations}")
+    if benchmark:
+        console.print(f"  Benchmark: [cyan]{benchmark}[/cyan] ({episodes_per_task} eps/task)")
 
     from reflex.runtime.server import ReflexServer
     server = ReflexServer(export_dir, device=device, strict_providers=False)
@@ -490,6 +520,29 @@ def benchmark_cmd(
             "  [yellow]Note: requested device=cuda but ended up on CPU. "
             "Install onnxruntime-gpu and CUDA 12 + cuDNN 9 for GPU performance.[/yellow]"
         )
+
+    # Task-success evaluation (optional, gated on --benchmark flag + [eval] extra)
+    if benchmark:
+        console.print(f"\n[bold]Task-success eval: {benchmark}[/bold]")
+        try:
+            from reflex.eval import run_task_benchmark
+        except ImportError as exc:
+            console.print(
+                f"[red]reflex.eval module missing: {exc}[/red]\n"
+                f"  The benchmark-plugin framework ships in v0.2 — see GOALS.yaml.\n"
+                f"  For now, use scripts/modal_libero10.py to run LIBERO-10 on Modal."
+            )
+            raise typer.Exit(2)
+
+        eval_result = run_task_benchmark(
+            benchmark,
+            export_dir=export_dir,
+            episodes_per_task=episodes_per_task,
+            device=device,
+        )
+        success_rate = eval_result.get("success_rate", 0.0)
+        console.print(f"\n  Task success: [bold]{success_rate * 100:.1f}%[/bold] "
+                      f"({eval_result.get('episodes_completed', 0)} episodes)")
 
 
 @app.command()
