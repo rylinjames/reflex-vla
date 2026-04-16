@@ -221,6 +221,9 @@ def validate(
 
     try:
         result = runner.run()
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Validation interrupted by user.[/yellow]")
+        raise typer.Exit(130)
     except FileNotFoundError as exc:
         console.print(f"[red]Missing required file: {exc}[/red]")
         raise typer.Exit(2)
@@ -232,6 +235,7 @@ def validate(
             import traceback
             traceback.print_exc()
         console.print(f"[red]Validation failed with unexpected error: {exc}[/red]")
+        console.print("[yellow]Re-run with --verbose for the full traceback.[/yellow]")
         raise typer.Exit(2)
 
     summary = result.get("summary", {})

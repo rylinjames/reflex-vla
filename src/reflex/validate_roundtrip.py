@@ -118,6 +118,15 @@ class ValidateRoundTrip:
         self.seed: int = int(seed)
         self.device: str = device
 
+        if self.num_test_cases < 1:
+            raise ValueError(
+                f"num_test_cases must be >= 1, got {self.num_test_cases}"
+            )
+        if self.threshold <= 0:
+            raise ValueError(
+                f"threshold must be > 0, got {self.threshold}"
+            )
+
         if not self.export_dir.exists():
             raise FileNotFoundError(
                 f"Export directory does not exist: {self.export_dir}"
@@ -132,7 +141,19 @@ class ValidateRoundTrip:
             raise ValueError(
                 f"Missing reflex_config.json in export dir: {self.export_dir}"
             )
-        self.config: dict[str, Any] = json.loads(config_path.read_text())
+        try:
+            self.config: dict[str, Any] = json.loads(config_path.read_text())
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"Malformed reflex_config.json at {config_path}: {exc}"
+            ) from exc
+
+        num_steps = self.config.get("num_denoising_steps", 10)
+        if not isinstance(num_steps, int) or num_steps < 1:
+            raise ValueError(
+                f"num_denoising_steps in reflex_config.json must be a positive "
+                f"integer, got {num_steps!r}"
+            )
 
         model_type = self.config.get("model_type")
         if not model_type:

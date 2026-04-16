@@ -157,8 +157,13 @@ def _build_decomposed_model(
                 vlm_cfg.text_config.hidden_size
                 // vlm_cfg.text_config.num_attention_heads
             )
-        except Exception:
-            pass
+        except Exception as exc:  # pragma: no cover - defensive
+            logging.getLogger(__name__).warning(
+                "Could not fetch SmolVLM2 head_dim from HF (%s); "
+                "falling back to default head_dim=%d",
+                exc,
+                head_dim,
+            )
         stack, _meta = build_expert_stack(state_dict, head_dim=head_dim)
         return stack.to(device).eval()
 

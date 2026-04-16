@@ -113,20 +113,24 @@ jobs:
 
 def emit_ci_template(
     output_path: Path,
-    reflex_version: str = "0.1.0",
+    reflex_version: str | None = None,
     *,
     overwrite: bool = False,
 ) -> None:
     """Write the GitHub Actions workflow YAML to ``output_path``.
 
     Creates parent directories as needed. Refuses to overwrite an existing file
-    unless ``overwrite=True`` is passed.
+    unless ``overwrite=True`` is passed. ``reflex_version`` defaults to the
+    current installed ``reflex.__version__`` when not explicitly provided.
     """
     output_path = Path(output_path)
     if output_path.exists() and not overwrite:
         raise FileExistsError(
             f"{output_path} exists — pass overwrite=True to replace"
         )
+    if reflex_version is None:
+        # Late import avoids circularity with reflex/__init__.py exports.
+        from reflex import __version__ as reflex_version  # type: ignore[no-redef]
     output_path.parent.mkdir(parents=True, exist_ok=True)
     rendered = TEMPLATE.format(reflex_version=reflex_version)
     output_path.write_text(rendered)
