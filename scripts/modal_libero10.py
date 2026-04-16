@@ -28,7 +28,7 @@ image = (
         "mujoco>=3.0", "gymnasium",
     )
     .pip_install("vla-eval")
-    .pip_install("robosuite>=1.4", "h5py")
+    .pip_install("robosuite==1.4.1", "h5py")
     .add_local_file("scripts/patch_libero.py", "/root/patch_libero.py", copy=True)
     .run_commands(
         "git clone https://github.com/Lifelong-Robot-Learning/LIBERO.git /opt/LIBERO"
