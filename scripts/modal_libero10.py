@@ -32,21 +32,14 @@ image = (
     .run_commands(
         "git clone https://github.com/Lifelong-Robot-Learning/LIBERO.git /opt/LIBERO"
         " && cd /opt/LIBERO && pip install -e ."
-        # Patch: replace ALL input() calls in LIBERO's __init__.py with "n"
-        ' && python3 -c "'
-        "import re, pathlib;"
-        "p = pathlib.Path('/opt/LIBERO/libero/libero/__init__.py');"
-        "t = p.read_text();"
-        "t = re.sub(r'input\\([^)]*\\)', '\"n\"', t);"  # input("prompt") -> "n"
-        "t = re.sub(r'input\\(\\)', '\"n\"', t);"  # input() -> "n"
-        "p.write_text(t);"
-        "print('Patched', t.count('\"n\"'), 'input calls')"
-        '"'
+        # Patch LIBERO's interactive prompts (uses a separate script to avoid quoting hell)
+        " && python /root/reflex-vla/scripts/patch_libero.py"
         " && python -c 'from libero.libero import benchmark; print(\"LIBERO import OK\")'"
     )
     .add_local_dir("src/reflex", "/root/reflex-vla/src/reflex", copy=True)
     .add_local_file("pyproject.toml", "/root/reflex-vla/pyproject.toml", copy=True)
     .add_local_file("README.md", "/root/reflex-vla/README.md", copy=True)
+    .add_local_file("scripts/patch_libero.py", "/root/reflex-vla/scripts/patch_libero.py", copy=True)
     .run_commands("cd /root/reflex-vla && pip install -e .")
     .env({
         "MUJOCO_GL": "egl",
