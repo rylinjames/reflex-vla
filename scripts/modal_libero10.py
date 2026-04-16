@@ -201,22 +201,35 @@ if __name__ == "__main__":
         log("mujoco", "fail", r.stderr[-300:])
         return results
 
-    # Check if LIBERO is available via vla-eval
+    # Check if LIBERO is importable
     r = subprocess.run(
-        ["python", "-c", "from vla_eval.benchmarks import get_benchmark; print('ok')"],
+        ["python", "-c", "import libero; print(f'libero at {libero.__file__}')"],
         capture_output=True, text=True,
     )
     if r.returncode == 0:
-        log("libero_check", "pass", "LIBERO benchmark available")
+        log("libero_check", "pass", f"LIBERO importable: {r.stdout.strip()}")
     else:
-        # LIBERO might need separate install
-        print(f"  LIBERO not in vla-eval benchmarks: {r.stderr[-200:]}")
-        print("  Attempting pip install of LIBERO...")
-        subprocess.run(
+        print(f"  LIBERO import failed: {r.stderr[-300:]}")
+        # Try installing at runtime
+        print("  Installing LIBERO from git...")
+        install_r = subprocess.run(
             ["pip", "install", "libero @ git+https://github.com/Lifelong-Robot-Learning/LIBERO.git"],
-            capture_output=True, text=True, timeout=300,
+            capture_output=True, text=True, timeout=600,
         )
-        log("libero_check", "pass", "LIBERO installed from git")
+        print(f"  Install exit: {install_r.returncode}")
+        if install_r.returncode != 0:
+            print(f"  Install stderr: {install_r.stderr[-500:]}")
+        # Recheck
+        r2 = subprocess.run(
+            ["python", "-c", "import libero; print(f'libero at {libero.__file__}')"],
+            capture_output=True, text=True,
+        )
+        if r2.returncode == 0:
+            log("libero_check", "pass", f"LIBERO installed: {r2.stdout.strip()}")
+        else:
+            log("libero_check", "fail", f"LIBERO still not importable: {r2.stderr[-300:]}")
+            serve_proc.terminate()
+            return results
 
     # ── Step 4: Start model server in background ──────────────────
     print("\n=== Step 4: Start model server ===")
