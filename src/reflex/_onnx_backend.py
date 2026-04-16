@@ -177,6 +177,20 @@ class ONNXBackend:
                     "pinned to 0 at export time.",
                 )
 
+        # Optional vlm_kv (v0.2+ exports include this as an input).
+        feed_vlm_kv = "vlm_kv" in self._input_names
+        vlm_kv = None
+        if feed_vlm_kv:
+            # Read the actual dim from the ONNX input shape (expert.vlm_kv_dim),
+            # NOT the VLM hidden_size — they differ (320 vs 960 for SmolVLA).
+            vlm_kv_shape = [
+                inp.shape for inp in self.session.get_inputs()
+                if inp.name == "vlm_kv"
+            ][0]
+            vlm_kv_dim = vlm_kv_shape[-1] if isinstance(vlm_kv_shape[-1], int) else 320
+            vlm_kv = np.zeros((b, 1, vlm_kv_dim), dtype=np.float32)
+            logger.debug("Expert expects vlm_kv input (dim=%d); feeding zeros for validation", vlm_kv_dim)
+
         dt = -1.0 / float(self.num_steps)
         for step in range(self.num_steps):
             t = 1.0 + step * dt
@@ -188,6 +202,8 @@ class ONNXBackend:
             }
             if embodiment_arr is not None:
                 inputs["embodiment_id"] = embodiment_arr
+            if feed_vlm_kv:
+                inputs["vlm_kv"] = vlm_kv
             velocity = self.session.run(None, inputs)[0]
             current = current + velocity * dt
 

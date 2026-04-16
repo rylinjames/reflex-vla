@@ -299,7 +299,7 @@ class PyTorchBackend:
                     dtype=torch.float32,
                     device=self.device,
                 )
-                velocity = self.model(actions, timestep, position_ids)
+                velocity = self.model(actions, timestep, position_ids, vlm_kv=None)
                 if velocity.shape != actions.shape:
                     raise RuntimeError(
                         f"velocity shape {tuple(velocity.shape)} does not match "
