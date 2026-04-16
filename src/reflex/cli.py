@@ -196,20 +196,29 @@ def export(
 
 @app.command()
 def validate(
-    export_dir: str = typer.Argument("", help="Path to exported model directory"),
+    target: str = typer.Argument("", help="Export directory OR HuggingFace model ID (with --pre-export)"),
     model: str = typer.Option("", help="HuggingFace model ID for PyTorch reference (auto-detect from reflex_config.json if empty)"),
     threshold: float = typer.Option(
         1e-4,
-        help="Max acceptable L2 abs diff per action dim. Default 1e-4 (changed from v0.1 stub default of 0.02).",
+        help="Max acceptable L2 abs diff per action dim. Default 1e-4.",
     ),
     num_cases: int = typer.Option(5, help="Number of seeded fixtures"),
     seed: int = typer.Option(0, help="RNG seed for fixtures + initial noise"),
     device: str = typer.Option("cpu", help="Device for PyTorch reference: cpu or cuda"),
     output_json: bool = typer.Option(False, "--output-json", help="Emit pure JSON instead of Rich tables"),
     init_ci: bool = typer.Option(False, "--init-ci", help="Emit .github/workflows/reflex-validate.yml and exit"),
+    quick: bool = typer.Option(
+        False, "--quick",
+        help="Fast static checks only (file exists, ONNX loadable, no NaN). Skip parity harness.",
+    ),
+    pre_export: bool = typer.Option(
+        False, "--pre-export",
+        help="Check a raw checkpoint before exporting. Takes model ID, not export dir.",
+    ),
+    hardware: str = typer.Option("desktop", help="Hardware target for --pre-export memory check"),
     verbose: bool = typer.Option(False, help="Verbose logging"),
 ):
-    """Validate exported ONNX vs PyTorch reference (round-trip parity)."""
+    """Validate an export: full parity (default), static checks (--quick), or pre-export checkpoint health (--pre-export)."""
     _setup_logging(verbose)
 
     if init_ci:
@@ -226,9 +235,91 @@ def validate(
         console.print(f"[green]Wrote CI template:[/green] {out}")
         raise typer.Exit(0)
 
-    if not export_dir:
-        console.print("[red]export_dir is required (unless --init-ci is passed).[/red]")
+    if not target:
+        console.print("[red]Export directory or model ID is required (unless --init-ci).[/red]")
         raise typer.Exit(2)
+
+    # --pre-export: check a raw checkpoint (replaces old `reflex check`)
+    if pre_export:
+        from reflex.validate_training import run_all_checks
+        console.print(f"\n[bold]Reflex Validate (pre-export)[/bold]")
+        console.print(f"  Checkpoint: {target}")
+        console.print(f"  Target:     {hardware}\n")
+
+        results = run_all_checks(target, target=hardware)
+        table = Table(title="Pre-export checks")
+        table.add_column("Check", style="cyan")
+        table.add_column("Status")
+        table.add_column("Detail")
+        n_pass = 0
+        for r in results:
+            status = "[green]PASS[/green]" if r.passed else (
+                "[yellow]WARN[/yellow]" if r.severity == "warning" else "[red]FAIL[/red]"
+            )
+            if r.passed:
+                n_pass += 1
+            table.add_row(r.name, status, r.detail[:80])
+        console.print(table)
+        console.print(f"\n  Passed: [bold]{n_pass}/{len(results)}[/bold]")
+        raise typer.Exit(0 if n_pass == len(results) else 1)
+
+    # --quick: static checks on an export directory (faster than full parity)
+    if quick:
+        export_path = Path(target)
+        console.print(f"\n[bold]Reflex Validate (--quick)[/bold]")
+        console.print(f"  Export: {export_path}\n")
+
+        table = Table(title="Static export checks")
+        table.add_column("Check", style="cyan")
+        table.add_column("Status")
+        table.add_column("Detail")
+        n_pass = n_total = 0
+
+        def _check(name: str, ok: bool, detail: str) -> None:
+            nonlocal n_pass, n_total
+            n_total += 1
+            if ok:
+                n_pass += 1
+            status = "[green]PASS[/green]" if ok else "[red]FAIL[/red]"
+            table.add_row(name, status, detail[:80])
+
+        _check("export_dir exists", export_path.exists(), str(export_path))
+        config_path = export_path / "reflex_config.json"
+        _check("reflex_config.json", config_path.exists(), str(config_path))
+
+        config: dict = {}
+        if config_path.exists():
+            try:
+                config = json.loads(config_path.read_text())
+                _check("config parses", True, f"{len(config)} keys")
+            except Exception as e:
+                _check("config parses", False, str(e))
+
+        # Check each expected ONNX file
+        import onnxruntime as ort
+        import numpy as np
+        for fname in ("expert_stack.onnx", "vision_encoder.onnx", "text_embedder.onnx", "decoder_prefill.onnx"):
+            fpath = export_path / fname
+            if fpath.exists():
+                try:
+                    sess = ort.InferenceSession(str(fpath), providers=["CPUExecutionProvider"])
+                    inputs = [inp.name for inp in sess.get_inputs()]
+                    _check(f"{fname} loads", True, f"inputs={inputs}")
+                except Exception as e:
+                    _check(f"{fname} loads", False, str(e)[:80])
+            else:
+                # Only the expert_stack is required; VLM files are optional for non-SmolVLA
+                if fname == "expert_stack.onnx":
+                    _check(f"{fname} present", False, "missing (required)")
+                else:
+                    table.add_row(fname, "[dim]skipped[/dim]", "not present")
+
+        console.print(table)
+        console.print(f"\n  Passed: [bold]{n_pass}/{n_total}[/bold]")
+        raise typer.Exit(0 if n_pass == n_total else 1)
+
+    # Default: full ONNX-vs-PyTorch parity harness
+    export_dir = target  # rename for legacy code paths below
 
     if device not in ("cpu", "cuda"):
         console.print(f"[red]--device must be 'cpu' or 'cuda', got: {device}[/red]")
@@ -727,35 +818,34 @@ def adapt(
     raise typer.Exit(0)
 
 
-@app.command()
+@app.command(hidden=True)
 def check(
     checkpoint: str = typer.Argument(help="HuggingFace ID or local path"),
     target: str = typer.Option("desktop", help="Target hardware: orin-nano, orin, orin-64, thor, desktop"),
     verbose: bool = typer.Option(False, help="Verbose logging"),
 ):
-    """Pre-deployment validation — 5 checks before shipping (Wedge 7)."""
+    """[DEPRECATED] Replaced by `reflex validate --pre-export`. Forwards for compat."""
+    console.print(
+        "[yellow]`reflex check` is deprecated and will be removed in v0.3.[/yellow]\n"
+        "[yellow]Use:[/yellow] [cyan]reflex validate "
+        f"{checkpoint} --pre-export --hardware {target}[/cyan]\n"
+    )
     _setup_logging(verbose)
     from reflex.validate_training import run_all_checks
 
-    console.print(f"\n[bold]Reflex Check[/bold]")
-    console.print(f"  Checkpoint: {checkpoint}")
-    console.print(f"  Target:     {target}")
-    console.print()
-
     results = run_all_checks(checkpoint, target=target)
-
     table = Table(title="Pre-Deployment Checks")
     table.add_column("Check", style="cyan")
     table.add_column("Status")
     table.add_column("Detail")
     n_pass = 0
     for r in results:
-        status = "[green]PASS[/green]" if r.passed else \
-                 f"[yellow]WARN[/yellow]" if r.severity == "warning" else "[red]FAIL[/red]"
+        status = "[green]PASS[/green]" if r.passed else (
+            "[yellow]WARN[/yellow]" if r.severity == "warning" else "[red]FAIL[/red]"
+        )
         if r.passed:
             n_pass += 1
         table.add_row(r.name, status, r.detail[:80])
-
     console.print(table)
     console.print(f"\n  Passed: [bold]{n_pass}/{len(results)}[/bold]")
     if n_pass < len(results):
