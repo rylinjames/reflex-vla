@@ -18,24 +18,25 @@ patched = 0
 
 new_lines = []
 for i, line in enumerate(lines):
-    # Line ~50: answer = input("Do you want to specify...").lower()
-    if "input(" in line and "Do you want to specify" in line:
-        new_lines.append(line.replace('input("Do you want to specify a custom path for the dataset folder? (Y/N): ").lower()', '"n"'))
-        patched += 1
-    # Line ~60: custom_dataset_path = input("Enter the path...")
-    elif "input(" in line and "Enter the path" in line:
-        new_lines.append(line.replace('input("Enter the path where you want to store the datasets: ")', '"/tmp/libero_data"'))
-        patched += 1
-    # Line ~68: confirm_answer = input().lower()
-    elif "input()" in line and "confirm" in line.lower():
-        new_lines.append(line.replace("input().lower()", '"y"'))
-        patched += 1
-    # Catch any other bare input() calls
-    elif line.strip().startswith("input(") or "= input(" in line:
-        new_lines.append(line.replace("input()", '"n"'))
-        patched += 1
+    if "input(" in line or "input()" in line:
+        # Replace ANY input() or input("...") with a safe default
+        import re
+        new_line = re.sub(r'input\([^)]*\)\.lower\(\)', '"n"', line)
+        new_line = re.sub(r'input\([^)]*\)', '"n"', new_line)
+        new_line = re.sub(r'input\(\)\.lower\(\)', '"n"', new_line)
+        new_line = re.sub(r'input\(\)', '"n"', new_line)
+        if new_line != line:
+            patched += 1
+            print(f"  Line {i+1}: {line.strip()!r} -> {new_line.strip()!r}")
+        new_lines.append(new_line)
     else:
         new_lines.append(line)
 
 target.write_text("\n".join(new_lines) + "\n")
 print(f"Patched {patched} input() calls in {target}")
+
+# Nuke all .pyc caches so Python doesn't use stale bytecode
+import subprocess
+subprocess.run(["find", "/opt/LIBERO", "-name", "*.pyc", "-delete"], check=False)
+subprocess.run(["find", "/opt/LIBERO", "-name", "__pycache__", "-type", "d", "-exec", "rm", "-rf", "{}", "+"], check=False)
+print("Cleared .pyc caches")
