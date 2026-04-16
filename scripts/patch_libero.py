@@ -13,34 +13,39 @@ if not target.exists():
     print(f"ERROR: {target} not found")
     sys.exit(1)
 
-lines = target.read_text().splitlines()
-patched = 0
+import re
 
-# Dump lines 60-80 for debugging
-print("--- Lines 60-80 BEFORE patch ---")
-for i in range(max(0, 59), min(len(lines), 80)):
-    print(f"  {i+1:3d}: {lines[i]!r}")
+# Work on the full text (not line-by-line) to handle multi-line input() calls
+text = target.read_text()
 
-new_lines = []
-for i, line in enumerate(lines):
-    if "input(" in line or "input()" in line:
-        # Replace ANY input() or input("...") with a safe default
-        import re
-        new_line = re.sub(r'input\([^)]*\)\.lower\(\)', '"n"', line)
-        new_line = re.sub(r'input\([^)]*\)', '"n"', new_line)
-        new_line = re.sub(r'input\(\)\.lower\(\)', '"n"', new_line)
-        new_line = re.sub(r'input\(\)', '"n"', new_line)
-        if new_line != line:
-            patched += 1
-            print(f"  Line {i+1}: {line.strip()!r} -> {new_line.strip()!r}")
-        new_lines.append(new_line)
-    else:
-        new_lines.append(line)
+# Pattern 1: multi-line input(\n    "prompt"\n).lower()
+text, n1 = re.subn(
+    r'input\(\s*\n\s*"[^"]*"\s*\n\s*\)\.lower\(\)',
+    '"n"',
+    text,
+)
 
-target.write_text("\n".join(new_lines) + "\n")
-print(f"Patched {patched} input() calls in {target}")
+# Pattern 2: multi-line input(\n    "prompt"\n)
+text, n2 = re.subn(
+    r'input\(\s*\n\s*"[^"]*"\s*\n\s*\)',
+    '"/tmp/libero_data"',
+    text,
+)
 
-# Nuke all .pyc caches so Python doesn't use stale bytecode
+# Pattern 3: single-line input().lower()
+text, n3 = re.subn(r'input\(\)\.lower\(\)', '"n"', text)
+
+# Pattern 4: single-line input("prompt")
+text, n4 = re.subn(r'input\([^)]*\)', '"n"', text)
+
+# Pattern 5: bare input()
+text, n5 = re.subn(r'input\(\)', '"n"', text)
+
+total = n1 + n2 + n3 + n4 + n5
+target.write_text(text)
+print(f"Patched {total} input() calls ({n1} multi-line+lower, {n2} multi-line, {n3} single+lower, {n4} single, {n5} bare)")
+
+# Nuke .pyc caches
 import subprocess
 subprocess.run(["find", "/opt/LIBERO", "-name", "*.pyc", "-delete"], check=False)
 subprocess.run(["find", "/opt/LIBERO", "-name", "__pycache__", "-type", "d", "-exec", "rm", "-rf", "{}", "+"], check=False)
