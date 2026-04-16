@@ -160,12 +160,12 @@ def run_trajectory_replay():
     try:
         from datasets import load_dataset
 
-        # lerobot/xarm_lift_medium is small, has image observations + actions.
+        # lerobot/pusht is small, has image observations + actions.
         # Try it first, fall back to pusht.
         dataset = None
         dataset_name = None
         for candidate in [
-            "lerobot/xarm_lift_medium",
+            "lerobot/pusht",
             "lerobot/pusht",
         ]:
             try:
