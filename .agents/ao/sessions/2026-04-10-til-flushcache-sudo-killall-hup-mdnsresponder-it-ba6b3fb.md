@@ -54,6 +54,8 @@ It'll ask for your password. After that the URL `https://africal.playindus.worke
 - `/Users/romirjain/Desktop/Building Projects/AfriCal/AfriCal/Logic/MainTabView.swift`
 - `/Users/romirjain/Desktop/Building Projects/AfriCal/AfriCal/Home/AnalyticsView.swift`
 - `/Users/romirjain/Desktop/Building Projects/AfriCal/AfriCal/Home/MenuView.swift`
+- `/Users/romirjain/Desktop/Building Projects/AfriCal/AfriCal/Home`
+- `/Users/romirjain/Desktop/Building Projects/AfriCal/AfriCal/Home/MealRowView.swift`
 
 ## Issues
 - `row-level`
@@ -61,21 +63,23 @@ It'll ask for your password. After that the URL `https://africal.playindus.worke
 - `to-dismiss`
 - `mcp-nodejs`
 - `sub-boxes`
+- `sub-views`
 
 ## Tool Usage
 
 | Tool | Count |
 |------|-------|
-| Agent | 5 |
-| Bash | 63 |
-| Edit | 42 |
+| Agent | 9 |
+| Bash | 68 |
+| Edit | 50 |
 | Glob | 3 |
-| Grep | 21 |
-| Read | 34 |
+| Grep | 32 |
+| Read | 40 |
+| ToolSearch | 4 |
 | Write | 3 |
 
 ## Tokens
 
 - **Input:** 0
 - **Output:** 0
-- **Total:** ~958135 (estimated)
+- **Total:** ~1124167 (estimated)

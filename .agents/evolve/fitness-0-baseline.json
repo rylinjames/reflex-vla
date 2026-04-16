@@ -1,0 +1,98 @@
+{
+  "cycle": 0,
+  "timestamp": "2026-04-16T11:05:11.395576",
+  "cycle_start_sha": "316c1d40b8cace8e1d808ef47a7d158494fd0a75",
+  "goals": [
+    {
+      "id": "vlm-prefix-encoder",
+      "result": "fail",
+      "weight": 10,
+      "value": null,
+      "threshold": null
+    },
+    {
+      "id": "distill-dmpo",
+      "result": "fail",
+      "weight": 9,
+      "value": null,
+      "threshold": null
+    },
+    {
+      "id": "stripe-license-gating",
+      "result": "fail",
+      "weight": 8,
+      "value": null,
+      "threshold": null
+    },
+    {
+      "id": "ros2-bridge",
+      "result": "fail",
+      "weight": 8,
+      "value": null,
+      "threshold": null
+    },
+    {
+      "id": "nan-guard-hardening",
+      "result": "fail",
+      "weight": 7,
+      "value": null,
+      "threshold": null
+    },
+    {
+      "id": "xvla-exporter",
+      "result": "fail",
+      "weight": 7,
+      "value": null,
+      "threshold": null
+    },
+    {
+      "id": "api-key-auth",
+      "result": "fail",
+      "weight": 7,
+      "value": null,
+      "threshold": null
+    },
+    {
+      "id": "latency-histograms",
+      "result": "fail",
+      "weight": 6,
+      "value": null,
+      "threshold": null
+    },
+    {
+      "id": "adaptive-denoise-fix",
+      "result": "fail",
+      "weight": 5,
+      "value": null,
+      "threshold": null
+    },
+    {
+      "id": "determinism-version-hash",
+      "result": "fail",
+      "weight": 5,
+      "value": null,
+      "threshold": null
+    },
+    {
+      "id": "inference-test-coverage",
+      "result": "fail",
+      "weight": 4,
+      "value": null,
+      "threshold": null
+    },
+    {
+      "id": "openvla-exporter",
+      "result": "pass",
+      "weight": 4,
+      "value": null,
+      "threshold": null
+    },
+    {
+      "id": "sqlite-audit-log",
+      "result": "fail",
+      "weight": 3,
+      "value": null,
+      "threshold": null
+    }
+  ]
+}

@@ -50,6 +50,33 @@ One table scoring every path and stack on 10 weighted criteria: time to first do
 - picked
 - Flow matching vs discrete diffusion vs autoregressive — which action head paradigm is winning adoption, which will dominate in 12 months
 - TensorRT plugin API deep dive — read NVIDIA's...
+- will use it seriously:
+
+1. **Make `reflex export` produce a file that `reflex serve` actually loads.** Right now they're disconnected — export produces ONNX, but serve expects ONNX in a specific...
+- settled on building "Reflex" — a product with 7 CLI commands mapping to 7 technical wedges (export, serve, guard, turbo, split, adapt, check) that together form a universal VLA deployment platform....
+- picked a direction.
+- will use it.
+
+Sequence: post → measure response → buy hardware based on signal.
+
+## What I'll do meanwhile
+
+Nothing autonomous unless you fire the loop. The product is launch-ready. Adding more...
+- Architecture Decision Records)
+│   ├── 2026-04-14-disable-trt-when-batch-gt-1.md
+│   ├── 2026-04-14-deprioritize-adapt-and-split.md
+│   ├──...
+- decision: when `--max-batch > 1`, fall back from TRT EP to CUDA EP. TRT EP was rebuilding engines per input shape → 34s/call, 200x pessimization.
+-...
+- The plan is deliberate. Phase 1 is the open-source CLI, already live under Apache 2.0. I'm using it to capture the market the way Vercel captured Next.js developers or HashiCorp captured...
+- the plan is wrong.
+- **Zero traction signal.** "Already live" is true but weak. If you have any of these, add one sentence: stars, first external user, a Discord/issue filed by someone who isn't you....
+- the plan is wrong.
+- selected backend — it will be included in the research output document for traceability.
+
+### Step 3: Launch Explore Agent
+
+**YOU MUST DISPATCH AN EXPLORATION AGENT NOW.** Select the backend using...
 
 ## Knowledge
 - till listed as "highest ceiling, broadest TAM." It's neither in 2026. You can't build a billion-dollar company by being early to a market where the customers don't have revenue. Datadog didn't sell...
@@ -228,6 +255,395 @@ Output: one folder with TRT engines + ROS2 node + config
 - till types the same command. They don't know or care that you added a new framework — it just works with more models.
 
 `reflex turbo` starts with CUDA graph capture. Later you add Triton fused...
+- till have hardware. Find them via HuggingFace community.
+
+5. **University robotics labs** — email 5 professors who published VLA papers. "I built a tool that exports SmolVLA to ONNX for Jetson...
+- till running. The image build step takes the longest — installing torch, transformers, onnx, fastapi on Python 3.12 is slow. I'll notify you automatically when it completes.
+- till waiting.
+- till running. Preemption is an A100 spot-instance thing — Modal gives us a new worker and it continues.
+- till waiting on the server start step. Let me check if it's moved.
+- Fixed by concatenating `[freqs.cos(), freqs.cos()]` to get full dim instead of half.
+   - **Cross-attention K/V dim (320 vs 720)**: Cross-attn layers accept VLM KV dim not expert hidden dim....
+- till waiting on the server start step. Let me check if it's moved."
+   
+   The user's latest "lmk" is asking for status update on the still-running Modal job.
+
+9. Optional Next Step:
+   Continue...
+- till running.
+
+Let me look at the server code to find the startup issue.
+- till building. Waiting for notification.
+- till running
+
+Let me keep watching — if this passes, GR00T goes from "export-only" to full serve support (4-model parity).
+- till running the GR00T full-stack test. Current log shows it's in the export step:
+- till available for users who want to plug their own decoder
+- Per-embodiment weights (leading dim 32) sliced at `embodiment_id=0` by default
+- All 5 E2E steps pass on Modal A100: build, PyTorch...
+- till stale (priorities set April 13, before pi0/pi0.5/GR00T landed) |
+| `phase_1_vla_software/README.md` | Unchecked |
+| Other wedge dirs (safety, turbo, split, adapt, check, simulation, training) |...
+- till to come.
+- till in the image build phase — `onnxruntime-gpu` is a new dep so Modal is building a fresh image with all the CUDA libs. The pip install step is ongoing. Function hasn't started yet.
+- till alive, nearly done. Key finding from the error message:
+
+```
+Failed to load /usr/local/.../libonnxruntime_providers_cuda.so with error:
+libcublasLt.so.12: cannot open shared object file
+Require...
+- till running:
+
+| Model | Eager | torch.compile | Speedup | ORT (CPU fallback) |
+|---|---|---|---|---|
+| SmolVLA | 19.1 | **2.86** | 6.7× | 29.1 |
+| pi0 | 23.9 | **5.56** | 4.3× | 76.9 |
+| pi0.5 |...
+- till pays ~5µs×10 launch overhead.
+
+Next action: fix the ORT-GPU / CUDA 12 mismatch + run a new benchmark that adds CUDA graph vs torch.compile. Writing that now.
+- till running. Let me give you honest numbers:
+
+**pi0 (full 10-step chunk on A100):**
+- torch.compile full loop: ~55.6ms (extrapolated from per-step)
+- ORT (still CPU fallback — now...
+- till CPU) | Reflex CUDA graph |
+|---|---|---|---|---|
+| smolvla | 99.8M | **25.8ms** | 462ms | 35.0ms |
+| pi0 | 314.6M | **47.5ms** | 999ms | 63.5ms |
+| pi0.5 | 426.9M | **52.9ms** | 1163ms | 69.7ms...
+- till wins by 20-26% across all 4 models (smolvla 25.8 vs 35.0,
+pi0 47.5 vs 63.5, pi0.5 52.9 vs 69.7, gr00t 113.2 vs 142.4 ms/chunk).
+
+Root cause: torch.compile already uses CUDA graphs internally...
+- tillation
+**Can we win?** YES.
+**Why:** `reflex turbo --strategy adaptive` can skip steps when velocity converges. If real VLAs converge in 4-6 steps instead of 10, that's **40-60% latency...
+- till                                     
+  4. F fourth — add WCET guarantees to reflex serve for regulated markets       
+  5. G fifth — finish reflex split once edge + fleet + adaptive are real...
+- tillation | `reflex turbo` (adaptive exists) + new `reflex distill` | partial |
+| F. Real-time guarantees (WCET) | `reflex serve` + `reflex guard` | needs building |
+| G. Cloud-edge split | `reflex...
+- till` training — any GPU with enough VRAM
+
+## Cloud GPU proxies for Jetson — you have options
+
+| GPU | Modal price | Why it approximates Jetson |
+|---|---|---|
+| A10G | ~$1.10/hr | Same Ampere...
+- til current bugs are fixed. First impressions matter.
+
+**1.1** Fix ORT CUDA fallback silent failure
+- Pin `torch==2.5.1` + `onnxruntime-gpu==1.20.1` + `nvidia-cudnn-cu12==9.*` +...
+- till building the two images (GPU variant done, CPU variant installing). Still running — I'll ping you when it finishes.
+- till installing. Modal's stream is active, just waiting on the packages to land. Will ping when the run completes.
+- till pulling the 10GB TRT container. Image extraction in progress now (`unpacking rootfs`). PID 47594 alive. After this it still needs to install the Python deps on top, download 4 checkpoints, build...
+- till pending** — failed because trtexec rejects `--minShapes/--optShapes/--maxShapes` when the ONNX has static shapes. Fix:
+- till failing on Python loading. Will wait for full completion (~3 more min for pi0.5 + gr00t + their builds), then switch to `trtexec --loadEngine` for benchmarking which doesn't need Python...
+- till mid-flight (TRT engine building). Will be ~10 min for full run. Wait for the next checkin.
+- till running. If they show similar ~3× speedups, we have a publishable headline result.
+- tilled VLA — `reflex distill` is v0.2 work
+- Bench on T4/L4 — A10G is sufficient as Jetson proxy
+
+I'm not scheduling another wakeup. The loop ends here. Ping me with a direction when you're ready...
+- till valid.
+
+---
+
+## Final-final state
+
+Quietly catching this one bug saved every fleet-mode user from a 200× pessimization. That's the value of running the matrix all the way through.
+
+**~37...
+- tillation for fewer denoise steps (`reflex distill` planned)
+- ❌ Per-model adaptive denoising thresholds (only pi0 currently works)
+- ❌ Hot-reload models without restart
+- ❌ Authentication on...
+- tillation for fewer denoise steps (reflex distill planned)          
+  - ❌ Per-model adaptive denoising thresholds (only pi0 currently works)   
+  - ❌ Hot-reload models without restart           ...
+- till` ($0)
+
+Consistency-model distillation. Train a 2-step student from a 10-step teacher.
+- Pure engineering — implement the loss, training loop, eval
+- Use Modal trial credits for training runs...
+- tillation) right now
+
+Honest answer: **I can. I was overstating the scope.**
+
+What I said earlier was "1-2 weeks" which is wrong for a minimum-viable distilled model. The real version takes one...
+- till dont get ur nxt stops for building, tell me ur plan for what ur adding and changing and why
+- till` (NEXT — one autonomous loop, ~$10 Modal)
+
+**What I'm ADDING:**
+- New CLI command: `reflex distill <hf_id> --steps 3 --output ./p0_distilled`
+- New module: `src/reflex/distill.py` —...
+- tillation adds even more drift.
+- tillation) two turns ago, but the conversation drifted into inference.net and roadmap sync. Before I actually kick off the ~6-hour distillation work + ~$10 Modal run, want to reconfirm that's what...
+- tillation SOTA for flow-matching VLAs (highest leverage)
+
+**Question I need answered:** Is progressive distillation (Salimans+Ho 2022) the right recipe for VLAs, or has someone published something...
+- tillation SOTA for flow-matching VLAs | a2212d3a5feb2ab79 | paper-search, hf-mcp, github |
+| 2 | VLM ONNX decomposition (SigLIP+PaliGemma/Qwen3) | a01f831f3093686e7 | github, hf-mcp, paper-search |
+|...
+- tillation SOTA for flow-matching VLAs" completed</summary>
+<result>I have comprehensive data. Let me compose the final answer.
+
+---
+
+# SOTA Distillation Recipe for Flow-Matching VLA Action Heads...
+- till lands as elementwise `Mul+Tanh` — export works, TRT LayerFusion fails, so you keep it as generic MHA. RMSNorm and RoPE themselves export cleanly.
+
+## 2. Gemma2 standalone
+
+Supported by...
+- tillation): recipe decided, scope larger than I said
+
+**Winner: pi-Flow (arXiv 2510.14974, ICLR 2026).** Target 4 denoise steps (not 2 or 3). Student trained via imitation flow-matching loss on...
+- tilled/quantized variants surfaced in the 6-week window via available tooling.
+
+## 6. Consolidation signals
+
+- **Mobileye–Mentee** ($900 M) is the one real M&amp;A.
+- **Agile Robots ↔ Google...
+- tillation recipe | Yes — bigger scope ($200-500 Modal) |
+| PaliGemma ONNX recipe exists (onnx-community/paligemma2-3b-pt-224) | Yes — 3-4 weeks instead of writing from scratch |
+| GR00T uses...
+- till apply, medium-term |
+| **YC robotics startups** | $0 | variable | long shot, AGX/Thor more likely than Nano |
+
+## Specific people to DM (the subagent surfaced names)
+
+- **Jiahong Chen** —...
+- tillation workloads.
+
+---
+
+## Recommended Sequence (Do Today)
+
+**1. Apply to Inference.net RIGHT NOW (5 min, ~50% approval, up to $10k)** — https://inference.net/grants — your project is...
+- till OPEN.** Opened 2026-03-12 by `jashshah999`. **0 comments, 5 reactions.** Untouched since creation (updated 2026-03-12T22:36). No workarounds posted. No alt-tool links.
+- Body already cites...
+- tillation) | 1 week approval | medium |
+| **HF Community Grant** | ZeroGPU Pro + H200 on Spaces | after you publish a Space demo | 40-50% |
+
+**Skip:**
+- Modal Startups (needs $1M+ VC you don't have...
+- tillation is assumed but absent in tooling.** Hsu's fourth pillar: *"Edge-deployable models designed specifically for robotics constraints rather than adapted from language models."*
+
+## 5. Notable...
+- tillation** | pi-Flow is the recipe. Needs real obs data (LIBERO/DROID). $200-500 Modal or free Google TRC. 1 week engineering. |
+| **VLM decomposition** | PaliGemma ONNX has prior art...
+- tillation right now — it's free-tier polish, not paid
+- Don't build VLM conditioning right now — v0.2 research, not monetizable on its own
+- Don't build async chunking — improves performance,...
+- till buy observability out of eng budget (Arize wedge); **compliance/audit-trail products must sell to legal/compliance/CISO** — longer cycles (6–9 months), bigger checks, but...
+- till buy observability** (Arize wedge, eng budget, PLG)
+- **Compliance/legal/CISO buy governance** (longer cycles, 6-9 months, bigger checks, procurement-gated)
+
+**Implication for you:** bottom-up...
+- tiles, per-task success rate.
+
+**Pain it solves:**
+- Foxglove's Banisadr, Actuate 2025: *"The missing infrastructure layer for real-world robotics."*
+- Hsu, a16z: *"95% in the lab, 60% in the...
+- till open in 2026 | LOW — their issue is our wedge |
+| **Foxglove Agent + Cloud** ($90/user/mo, $40M Series B) | Physical AI infrastructure, customers are NVIDIA/Amazon/Anduril/Waabi/Dexterity |...
+- tilities that accumulated over the last week of autonomous work. They're real commands with real code, but they're not wedges — they're supporting tools.
+
+## 1 leftover stub
+
+```
+reflex validate  #...
+- till mostly a stub. |
+| 12 | `reflex validate` | Stub — delete. |
+
+---
+
+## #1 — `reflex export`
+
+**What it does:** Takes a HuggingFace model ID (or local checkpoint) and produces a deployable...
+- til we do, "real VLA inference" is incomplete.
+- **Static batch shapes.** Forces CUDA EP fallback at `--max-batch > 1` (we solved it by routing, but the real fix is dynamic shapes in the ONNX).
+-...
+- till running
+
+#guard · #turbo · #split · #adapt · #check
+
+Will aggregate when more land. Want me to spawn the VLAgents audit subagent now, in parallel with the remaining 5?
+- till CD/DIS, final Q4 2026. Draft requires: ML-model-state auditability (Clause 8.3.1), decision-pathway data, secure storage, access controls, software-or-hardware flexibility. Your current...
+- till draft, final Q4 2026. **Our log format is missing a "decision pathway" field** — needs which policy head / token produced the action
+- EU AI Act Article 12: retention **6 months minimum for...
+- til these conditions are met:**
+1. Two or more design-partner customers explicitly request cloud offload (not hypothetical).
+2. You have a reference VLA that doesn't fit their edge hardware.
+3. Their...
+- tillation recipes (2026)
+
+| Method | arXiv | Code | Steps | Quality retention | Training cost (300M-1B params) |
+|---|---|---|---|---|---|
+| **pi-Flow** (ICLR'26) |...
+- til two design-partner customers explicitly request cloud offload AND have a reference VLA that doesn't fit edge hardware. **Build only a 2-day latency monitor** so `SplitConfig` has real signal;...
+- tillation-based small adapter
+- **DexGrasp-Zero** (2603.16806) — morphology-aligned graph for hands
+- **Embodiment Scaling Laws** (2505.05753) — scale beats adapters
+
+## 5. Gripper Diversity in...
+- fixed by disabling TRT EP when `max_batch > 1`
+   - **`module 'tensorrt' has no attribute 'Logger'`**: Python bindings not installed in nvcr.io container — switched to `trtexec --loadEngine` for...
+- tillation recipes: pi-Flow (arXiv 2510.14974), OneDP, Consistency Policy, Shortcut Models
+   - Real-Time Chunking (RTC) — arXiv 2506.07339 + `lerobot.policies.rtc` library (LeRobot v0.5, Mar 2026)
+...
+- till** | **SHIP FIRST** | pi-Flow (arXiv 2510.14974) on pi0.5-base: 10→2 step distillation, moat is flow-matching expertise | ~1 wk | ~$60 |
+| **serve** | **DEFEND** | RTC (`lerobot.policies.rtc`)...
+- till` → `serve` (RTC, auth, hot-reload) → `export` (dynamic batch + VLM KV-cache) → `check` (flow-VLA distributional diff) → `guard` v2. Land on PyPI, 20 paying robotics teams, NVIDIA...
+- till (compress), check (test), split (cloud-edge).
+
+**Competitors & how we beat them:**
+| Competitor | What they do | Why we win |
+|---|---|---|
+| **Physical Intelligence (`openpi`)** | Releases...
+- till (compress), check (test), split (cloud-edge).
+
+Competitors and how we beat them
+- Physical Intelligence (openpi): They release pi0/pi0.5 model weights only. No deployment tool. We are the bridge...
+- tillation (the biggest moat):
+- `src/reflex/distill/__init__.py` — new wedge entrypoint
+- `src/reflex/distill/piflow.py` — pi-Flow recipe (arXiv 2510.14974), 10-step teacher → 2-step student...
+- till-first.md
+│   └── TEMPLATE.md                   — context / decision / consequences / revisit-date
+├── 02_research/
+│   ├── papers/                       — one .md per...
+- tillation with revisit-date < today."
+- **Calendar** — month view of daily notes.
+- **Tag Wrangler** — bulk rename/merge tags.
+- **Advanced Tables** — better markdown table editing.
+
+---
+
+##...
+- till-first.md
+│   ├── 2026-04-14-deprioritize-adapt-and-split.md
+│   ├── 2026-04-14-wrap-not-rebuild-vla-eval.md
+│   ├── 2026-04-14-disable-trt-when-batch-gt-1.md
+│  ...
+- till, checks). First Pro tier at $99/mo.
+> 2. **6-12mo:** bundle Reflex with Seeed / Trossen / Jetson hardware partners. Rev-share, no inventory.
+> 3. **12-24mo:** Reflex Compute Pack — own-branded...
+- till, checks). First paid tier at $99/mo.
+> 2. Months 6-12: bundle Reflex with hardware partners like Seeed, Trossen, and the SO-ARM / LeRobot crowd. Rev-share, no inventory risk.
+> 3. Year 2: Reflex...
+- tillation pipeline that takes a 10-step flow-matching model down to 2 steps (5x faster), safety clamping with tamper-evident audit logs for EU AI Act compliance, fleet-scale batching for warehouse...
+- till (compression)
+Check (testing)
+Split (cloud-edge execution)
+
+Competitors and how we beat them
+Physical Intelligence (openpi)
+Only releases model weights (pi0/pi0.5)
+No deployment layer
+→ We are...
+- till (pi-Flow on pi0.5), RTC async chunking, hot-reload, VLM prefix KV-cache.
+
+## 4. Install story (3 lines)
+```bash
+pip install 'reflex-vla[serve,gpu] @...
+- till (compression)
+Check (testing)
+Split (cloud-edge execution)
+Competitors and how we beat them
+Physical Intelligence (openpi)
+Only releases model weights (pi0/pi0.5)
+No deployment layer
+→ We are...
+- till missing. Add them in this order:
+
+## 1. Opening hook (before the wedge list)
+> Taking a trained VLA onto a real robot is a two-week engineering project per model. Reflex makes it three...
+- till — compress 10-step flow-matching models to 2 steps (shipping in v0.2)
+Check — deployment-readiness + flow-VLA distributional regression detection
+Split — cloud-edge orchestration with...
+- till — compress 10-step flow-matching to 2 steps (v0.2, shipping in week 0)
+  • pi-Flow recipe (arXiv 2510.14974) on pi0.5-base
+  • 5x speed target with <5% accuracy drop
+  • Trains on LIBERO...
+- tillation that cuts inference steps 5x, fleet-scale batching for warehouses, and tamper-evident audit logging for EU AI Act compliance which kicks in August 2026.
+
+From there I move into hardware....
+- tillation to cut inference steps by 5x, batching across fleets for warehouse setups, and audit logging that actually meets EU AI Act requirements when that starts getting enforced in August...
+- tillation to cut inference steps by 5x"** — the pi-Flow recipe is **10 → 2 steps**, which is a 5× step count reduction. Wall-clock speed is correlated but not identical. Say **"cut denoising...
+- tillation — needs an accuracy delta. pi-Flow paper claims <5% task-success drop going 10→2 steps on LIBERO. Say: *"pi-Flow distillation from 10 to 2 steps, <5% accuracy drop on LIBERO (per arXiv...
+- tillation via pi-Flow (arXiv 2510.14974), compressing 10 denoising steps to 2 with under 5% accuracy drop on LIBERO; fleet batching with tamper-evident audit logs satisfying EU AI Act Article 12...
+- till breaks under an engineer's read:
+
+## Baseline comparison weakness
+**"2.6 to 3.3x faster than torch.compile on an A10G per denoising step (batch=1, FP16 vs FP32..."** — `FP16 vs FP32` is the...
+- tillation in v0.2 is the path to >30 Hz. The same ONNX export targets a $249 Jetson Orin Nano Super Dev Kit — A10G is SM_86, Orin Nano is SM_87, same Ampere compute family but different memory...
+- till breaks. Ranked by severity.
+
+## Biggest attack surface: the core benchmark comparison
+
+**"2.6 to 3.3x faster than PyTorch with torch.compile at the model's native FP32 precision"** — this is...
+- tillation in v0.2 is the path to >30 Hz. All numbers above are Modal A10G; real Jetson Orin Nano validation is landing this week — Orin Nano is Ampere Tegra SM_87 with roughly 1/9 the SM count of...
+- tillation, fleet-scale batching, EU AI Act-compliant audit logging.
+Phase 3 is bundling Reflex pre-installed with hardware resellers like Seeed and Trossen, plus Jetson integrators, on a...
+- tillation, fleet batching for warehouse deployments, and audit logging built for the EU AI Act when that takes effect. From there I bundle Reflex pre-installed with hardware resellers like Seeed and...
+- till` via pi-Flow** (original week 0) — still the biggest unshipped moat. Distill pi0.5-base from 10 steps to 2, ~$60 Modal, ~1 week. Becomes the Pro-tier flagship: measurable 5x speedup you can...
+- til real VLM conditioning works. Pre-mortem: *"Fix the brain before timing it or compressing it."*
+
+**2. External user is week 1, not week 7.** Three critics agree. Solo-founder critic: *"Founders...
+- till.
+
+**13. `reflex distill` via pi-Flow on pi0.5-base** — CODE — 1 week (optimistic) / 3 weeks (pre-mortem base rate)
+pi-Flow velocity-field matching loss (arXiv 2510.14974). Teacher = frozen...
+- till functional but slower |
+
+
+ARGUMENTS: fill in the reflex validate stub: round-trip (image, prompt) tuples through the ONNX/TRT path and compare against the upstream PyTorch checkpoint; report...
+- til all issues assigned
+
+#### Validate Dependency Necessity
+
+For EACH declared dependency, verify:
+1. Does the blocked issue modify a file that the blocker also modifies? → **Keep**
+2. Does the...
+- til the epic is DONE.
+
+**CLI dependencies:** bd (issue tracking), ao (knowledge flywheel). Both optional — see `skills/shared/SKILL.md` for fallback table. If bd is unavailable, use TaskList for...
+- tils.py | 4 | A | Good |
+
+**Hotspots:** <list files with C or worse>
+**Skipped reason:** <if skipped, explain why - e.g., "radon not installed">
+
+## Council Verdict: PASS / WARN / FAIL
+
+| Judge |...
+- till pass. Committing and writing vibe report.
+- til all goals pass or kill-switch fires
+```
+
+## What `GOALS.yaml` looks like
+
+From `/Users/romirjain/.agents/skills/evolve/references/goals-schema.md`:
+
+```yaml
+version: 1
+mission: "Deploy any VLA...
+- till.
+
+## On CLI bloat — this is the more important question
+
+Right now `reflex` has 12 commands. The council's robotics engineer wanted me to add `reflex verify` (which we folded into `validate`),...
+- till and ros2, but im not sure overall what are the best things to do moving forward, what commands can i make you do to make u research what to add to goals.yaml, dont code yet just ljkm
+- til you say go.
+
+Or if you just want steps 1-3 without any coding at all, say **"run the research"** and I'll spawn all 4 research agents + the council brainstorm in parallel and report back. No...
+- tillation recipes, quantization methods, or runtime techniques we should implement? |
+| HF model trends | hf-mcp-server | What VLA models are trending or newly published that reflex doesn't support?...
+- till 8 agents, just sequenced correctly. Batch 1 ~5 min, batch 2 ~3 min, total ~8 min.
+
+Go?
 
 ## Files Changed
 - `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/improvements/INDEX.md`
@@ -416,6 +832,111 @@ Output: one folder with TRT engines + ROS2 node + config
 - `/Users/romirjain/Desktop/building projects/reflex-vla/tests/test_split.py`
 - `/Users/romirjain/Desktop/building projects/reflex-vla/tests/test_adapt.py`
 - `/Users/romirjain/Desktop/building projects/reflex-vla/tests/test_check.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/modal_sim_test.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/modal_e2e_demo.py`
+- `/private/tmp/claude-501/-Users-romirjain/9dc38b22-aa9c-466e-a9cb-730cced5f6bf/tasks/b89iao868.output`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/exporters/pi0_exporter.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/tests/test_checkpoint_detection.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/modal_test_pi0.py`
+- `/Users/romirjain/.claude/projects/-Users-romirjain/memory/project_reflex_vla.md`
+- `/Users/romirjain/.claude/projects/-Users-romirjain/memory/MEMORY.md`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/.gitignore`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/modal_test_pi05.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/modal_e2e_all_models.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/exporters/gr00t_exporter.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/modal_test_gr00t.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/exporters/openvla_exporter.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/postprocess/__init__.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/postprocess/openvla.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/tests/test_openvla_postprocess.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/modal_probe_gr00t.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/modal_test_gr00t_full.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/modal_verify_cli.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/modal_bench_onnx_vs_torch.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/modal_bench_path_b.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/modal_verify_strict_providers.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/modal_verify_wedge_compose.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/modal_bench_trt_fp16.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/modal_verify_batching.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/modal_verify_batching_real.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/launch/lerobot_3146_draft.md`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/launch/show_hn_draft.md`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/launch/reddit_robotics_draft.md`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/launch/README.md`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/docs/getting_started.md`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/modal_verify_adaptive_real.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/modal_verify_install_path.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/modal_verify_bench_all.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/LICENSE`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/modal_verify_trt_with_batch.py`
+- `/private/tmp/claude-501/-Users-romirjain/9dc38b22-aa9c-466e-a9cb-730cced5f6bf/tasks/a0c0c25b69902d351.output`
+- `/private/tmp/claude-501/-Users-romirjain/9dc38b22-aa9c-466e-a9cb-730cced5f6bf/tasks/a7d5381d195e36840.output`
+- `/Users/romirjain/Desktop/building projects/reflex_context/README.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/CLAUDE.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/00_vision/INDEX.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/00_vision/north_star.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/00_vision/positioning.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/00_vision/moat.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/01_decisions/INDEX.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/01_decisions/TEMPLATE.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/01_decisions/2026-04-14-ship-distill-first.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/01_decisions/2026-04-14-deprioritize-adapt-and-split.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/01_decisions/2026-04-14-wrap-not-rebuild-vla-eval.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/01_decisions/2026-04-14-disable-trt-when-batch-gt-1.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/01_decisions/2026-04-14-strict-provider-no-silent-cpu-fallback.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/02_research/papers/INDEX.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/02_research/papers/TEMPLATE.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/02_research/papers/2510.14974-piflow.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/02_research/papers/2506.07339-rtc.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/02_research/papers/2603.13966-vla-eval.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/02_research/papers/2604.05014-starvla.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/02_research/papers/2510.26742-dexmal-realtime-vla.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/02_research/papers/2601.11250-vlagents.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/02_research/competitors/INDEX.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/02_research/competitors/TEMPLATE.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/02_research/competitors/physical_intelligence.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/02_research/competitors/nvidia_groot.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/02_research/competitors/lerobot.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/02_research/competitors/vlagents.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/02_research/competitors/allenai_vla_eval.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/03_experiments/INDEX.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/03_experiments/2026-04-14-trt-fp16-vs-torch-compile.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/03_experiments/2026-04-14-batching-scale.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/03_experiments/2026-04-14-adaptive-denoising.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/04_product/INDEX.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/04_product/roadmap_6week.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/04_product/roadmap_5phase.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/04_product/prd/distill.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/04_product/prd/serve_v2.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/04_product/prd/export_v2.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/04_product/prd/check_v2.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/04_product/prd/guard_v2.md`
+- `/Users/romirjain/.claude/skills/vault-research/SKILL.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/05_inbox/.gitkeep`
+- `/Users/romirjain/Desktop/building projects/reflex_context/06_archive/.gitkeep`
+- `/Users/romirjain/Desktop/building projects/reflex_context/02_research/hardware_partners/.gitkeep`
+- `/Users/romirjain/Desktop/building projects/reflex_context/02_research/customers/.gitkeep`
+- `/Users/romirjain/Desktop/building projects/reflex_context/02_research/market/.gitkeep`
+- `/Users/romirjain/Desktop/building projects/reflex_context/.gitignore`
+- `/Users/romirjain/Desktop/building projects/reflex_context`
+- `/Users/romirjain/Desktop/building projects/reflex_context/01_decisions/2026-04-16-council-reprioritization.md`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/.agents/research/2026-04-16-reflex-validate-stub.md`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/.agents/rpi/phase-1-summary-2026-04-16-reflex-validate.md`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/.agents/plans/2026-04-16-reflex-validate-roundtrip.md`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/.agents/rpi/phase-2-summary-2026-04-16-reflex-validate.md`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/.agents/council/2026-04-16-pre-mortem-reflex-validate.md`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/.agents/rpi/phase-3-summary-2026-04-16-reflex-validate.md`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/_pytorch_backend.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/.agents/rpi/phase-4-summary-2026-04-16-reflex-validate.md`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/validate_roundtrip.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/ci_template.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/CHANGELOG.md`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/.agents/council/20260416T000000Z-vibe-recent.md`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/.agents/rpi/phase-5-summary-2026-04-16-reflex-validate.md`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/.agents/council/2026-04-16-post-mortem-reflex-validate.md`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/.agents/rpi/phase-6-summary-2026-04-16-reflex-validate.md`
+- `/Users/romirjain/.agents/skills/evolve/references/goals-schema.md`
+- `/Users/romirjain/.claude/skills/evolve/SKILL.md`
 
 ## Issues
 - `re-add`
@@ -552,23 +1073,271 @@ Output: one folder with TRT engines + ROS2 node + config
 - `key-value`
 - `non-fatal`
 - `one-command`
+- `to-serve`
+- `mid-build`
+- `bin-lookup`
+- `per-dataset`
+- `all-models`
+- `per-effort`
+- `to-effort`
+- `pro-tier`
+- `pre-flight`
+- `re-enter`
+- `re-start`
+- `to-head`
+- `vs-warm`
+- `to-first-action`
+- `per-stage`
+- `but-stub`
+- `in-place`
+- `mid-bench`
+- `one-off`
+- `as-pure-software`
+- `pre-flashed`
+- `of-full-loop`
+- `by-layer`
+- `per-watt`
+- `max-batch`
+- `of-models`
+- `no-strict`
+- `no-strict-providers`
+- `all-four`
+- `re-running`
+- `mid-compile`
+- `mid-flight`
+- `pre-launch`
+- `re-verify`
+- `of-session`
+- `for-launch`
+- `re-fire`
+- `api-key-file`
+- `hot-reload`
+- `re-measure`
+- `no-auth`
+- `ux-pain-point`
+- `hf-mcp`
+- `pre-trained`
+- `few-step`
+- `pre-train`
+- `no-obs`
+- `one-step`
+- `per-chunk-step`
+- `pt-224`
+- `to-text`
+- `per-head`
+- `two-graph`
+- `ai-lab`
+- `to-text-with`
+- `of-box`
+- `end-2026`
+- `for-flow-matching`
+- `in-talks-to`
+- `in-talks-for`
+- `ai-hits-14b`
+- `for-900m`
+- `the-latest-robotics`
+- `to-partner-with`
+- `ai-vision`
+- `for-edge-and`
+- `and-nvidia-jetpack`
+- `at-gtc-as`
+- `ai-moves-toward`
+- `new-sealed`
+- `to-oranges`
+- `ai-for-science`
+- `is-the-external`
+- `the-2026-ultimate`
+- `to-google-for`
+- `and-350k-in`
+- `alt-tool`
+- `in-chief`
+- `tc-huang`
+- `in-repo`
+- `on-file`
+- `on-fire`
+- `to-chunk`
+- `as-butter-robot`
+- `was-bigger-and`
+- `to-fake-a`
+- `off-hours`
+- `ai-bmw-humanoid`
+- `in-the-room`
+- `on-robot-or`
+- `and-place`
+- `in-memory`
+- `per-process`
+- `per-fleet`
+- `co-bots`
+- `as-code`
+- `mid-market`
+- `add-ons`
+- `pre-2024`
+- `top-down`
+- `ai-act-compliance`
+- `to-prepare-for`
+- `ai-act`
+- `co-aims`
+- `ai-review-2026`
+- `ai-founded-by`
+- `in-2026`
+- `the-future-of`
+- `ai-cisco-announces`
+- `to-acquire-robust`
+- `iso-42001-cost`
+- `all-blogs`
+- `the-cisos-expanding`
+- `ai-mandate`
+- `in-the-c`
+- `and-the`
+- `per-robot`
+- `per-task`
+- `for-web-services`
+- `my-tasks`
+- `per-month`
+- `per-eng-hour`
+- `re-invents`
+- `to-money`
+- `out-compete`
+- `big-iron`
+- `pre-deploy`
+- `pre-export`
+- `of-mouth`
+- `vs-model`
+- `pi-serve`
+- `vla-action`
+- `ros-args`
+- `vla-safe`
+- `wp-content`
+- `log-with-sha`
+- `ai-impacts-the`
+- `ai-act-guide`
+- `to-motion`
+- `pre-fetch`
+- `max-not-mean`
+- `fit-edge`
+- `non-contact`
+- `in-pytorch`
+- `in-context`
+- `ad-hoc`
+- `by-case`
+- `the-chasm-from`
+- `non-tool-results`
+- `vla-eval`
+- `rev-share`
+- `pre-tuned`
+- `co-located`
+- `to-silicon`
+- `to-pay`
+- `per-row`
+- `rad-per-s`
+- `api-key`
+- `non-pi0`
+- `git-tracked`
+- `trt-when-batch`
+- `and-split`
+- `trt-fp16-vs`
+- `adr-tools`
+- `as-you-go`
+- `mcp-local-rag`
+- `mcp-server`
+- `not-rebuild-vla`
+- `no-silent-cpu`
+- `pi-flow`
+- `re-ingest`
+- `re-ingests`
+- `db-path`
+- `own-branded`
+- `for-robots`
+- `one-pager`
+- `one-liner`
+- `two-week`
+- `non-zero`
+- `dev-tools`
+- `off-key`
+- `per-device`
+- `to-apples`
+- `re-encoded`
+- `non-trivial`
+- `re-encode`
+- `row-hash`
+- `to-running`
+- `per-dim`
+- `not-tried`
+- `per-chunk`
+- `one-offs`
+- `pre-seed`
+- `opt-out`
+- `per-command`
+- `de-risking`
+- `pre-council`
+- `ag-23k`
+- `max-cycles`
+- `re-crank`
+- `to-phase`
+- `one-shard-at`
+- `re-vibe`
+- `and-spawn`
+- `ag-5k2`
+- `per-action-dim`
+- `sub-agents`
+- `sub-agent`
+- `ol-571`
+- `ag-dnu`
+- `sub-issues`
+- `of-scope`
+- `na-0001`
+- `on-wave-1`
+- `na-0002`
+- `per-issue`
+- `in-session`
+- `add-user-authentication`
+- `two-round`
+- `pre-mortem-auth`
+- `add-caching-layer`
+- `ag-oke`
+- `ag-9ad`
+- `rev-parse`
+- `pre-next-wave`
+- `ag-m0r`
+- `ag-xj9`
+- `api-clarity`
+- `na-0042`
+- `api-surface`
+- `pre-mortem-reflex`
+- `by-wave`
+- `vlm-prefix-encoder`
+- `dev-env-reproducible`
+- `dev-setup`
+- `by-goal`
+- `rtc-flag`
+- `no-brainer`
 
 ## Tool Usage
 
 | Tool | Count |
 |------|-------|
-| Agent | 96 |
-| Bash | 241 |
-| Edit | 60 |
+| Agent | 144 |
+| AskUserQuestion | 1 |
+| Bash | 582 |
+| Edit | 212 |
 | ExitPlanMode | 2 |
 | Glob | 2 |
-| Read | 79 |
-| ToolSearch | 4 |
-| WebFetch | 19 |
-| Write | 171 |
+| Grep | 5 |
+| Read | 158 |
+| ScheduleWakeup | 32 |
+| Skill | 6 |
+| TaskCreate | 7 |
+| TaskUpdate | 24 |
+| ToolSearch | 11 |
+| WebFetch | 20 |
+| Write | 272 |
+| mcp__basic-memory__recent_activity | 1 |
+| mcp__local-rag__ingest_data | 1 |
+| mcp__local-rag__query_documents | 1 |
+| mcp__local-rag__status | 2 |
 
 ## Tokens
 
 - **Input:** 0
 - **Output:** 0
-- **Total:** ~4214708 (estimated)
+- **Total:** ~8792986 (estimated)
