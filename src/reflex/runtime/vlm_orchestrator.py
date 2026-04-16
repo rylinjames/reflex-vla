@@ -42,6 +42,7 @@ class VLMPrefixOrchestrator:
         self._vision_session = None
         self._text_session = None
         self._prefill_session = None
+        self._state_session = None  # reserved for future ONNX state encoder
 
         # Cached tokenizer / processor
         self._tokenizer = None
@@ -240,7 +241,7 @@ class VLMPrefixOrchestrator:
                 prefix_kv = self._prefill_session.run(
                     None,
                     {
-                        "prefix_embeds": prefix_embeds.astype(np.float32),
+                        "inputs_embeds": prefix_embeds.astype(np.float32),
                         "attention_mask": attention_mask.astype(np.int64),
                     },
                 )[0]
@@ -254,6 +255,19 @@ class VLMPrefixOrchestrator:
 
         # Fallback: return assembled embeddings without decoder pass
         return prefix_embeds
+
+    def close(self) -> None:
+        """Release ONNX session resources."""
+        for attr in ("_vision_session", "_text_session", "_prefill_session", "_state_session"):
+            session = getattr(self, attr, None)
+            if session is not None:
+                del session
+                setattr(self, attr, None)
+        self._pipeline_complete = False
+        logger.debug("VLMPrefixOrchestrator sessions released")
+
+    def __del__(self) -> None:
+        self.close()
 
     # ------------------------------------------------------------------
     # Internal pipeline stages
