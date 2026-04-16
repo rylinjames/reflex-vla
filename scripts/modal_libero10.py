@@ -37,7 +37,14 @@ image = (
     .add_local_file("pyproject.toml", "/root/reflex-vla/pyproject.toml", copy=True)
     .add_local_file("README.md", "/root/reflex-vla/README.md", copy=True)
     .run_commands("cd /root/reflex-vla && pip install -e .")
-    .env({"MUJOCO_GL": "egl", "PYOPENGL_PLATFORM": "egl"})
+    .env({
+        "MUJOCO_GL": "egl",
+        "PYOPENGL_PLATFORM": "egl",
+        "LIBERO_DATA_DIR": "/tmp/libero_data",
+        "LIBERO_ASSET_DIR": "/opt/LIBERO/libero/libero/assets",
+        "LIBERO_BASE": "/tmp/libero_data",
+    })
+    .run_commands("mkdir -p /tmp/libero_data")
 )
 
 
