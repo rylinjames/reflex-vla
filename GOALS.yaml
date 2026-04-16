@@ -5,8 +5,8 @@ goals:
   # ── CRITICAL (weight 10) ──────────────────────────────────────────
 
   - id: vlm-prefix-encoder
-    description: "VLM backbone exports as separate ONNX with KV-cache so /act returns task-conditioned actions instead of random-tensor noise"
-    check: "test -f src/reflex/exporters/vlm_prefix_exporter.py && .venv/bin/python -c 'from reflex.exporters.vlm_prefix_exporter import export_vlm_prefix' 2>/dev/null"
+    description: "VLM backbone exports as real SigLIP+SmolLM2 ONNX (not stub) with vlm_kv_dim=960 so /act returns task-conditioned actions"
+    check: "test -f src/reflex/exporters/vlm_prefix_exporter.py && grep -q 'AutoModel\\|from_pretrained' src/reflex/exporters/vlm_prefix_exporter.py 2>/dev/null && ! grep -q 'AdaptiveAvgPool2d' src/reflex/exporters/vlm_prefix_exporter.py 2>/dev/null"
     weight: 10
 
   # ── HIGH (weight 8-9) ─────────────────────────────────────────────
