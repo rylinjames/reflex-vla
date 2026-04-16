@@ -163,16 +163,114 @@ def export(
 
 @app.command()
 def validate(
-    export_dir: str = typer.Argument(help="Path to exported model directory"),
-    model: str = typer.Option("", help="Original model for comparison"),
-    threshold: float = typer.Option(0.02, help="Max acceptable absolute difference"),
+    export_dir: str = typer.Argument("", help="Path to exported model directory"),
+    model: str = typer.Option("", help="HuggingFace model ID for PyTorch reference (auto-detect from reflex_config.json if empty)"),
+    threshold: float = typer.Option(
+        1e-4,
+        help="Max acceptable L2 abs diff per action dim. Default 1e-4 (changed from v0.1 stub default of 0.02).",
+    ),
+    num_cases: int = typer.Option(5, help="Number of seeded fixtures"),
+    seed: int = typer.Option(0, help="RNG seed for fixtures + initial noise"),
+    device: str = typer.Option("cpu", help="Device for PyTorch reference: cpu or cuda"),
+    output_json: bool = typer.Option(False, "--output-json", help="Emit pure JSON instead of Rich tables"),
+    init_ci: bool = typer.Option(False, "--init-ci", help="Emit .github/workflows/reflex-validate.yml and exit"),
     verbose: bool = typer.Option(False, help="Verbose logging"),
 ):
-    """Validate exported model quality against PyTorch reference."""
+    """Validate exported ONNX vs PyTorch reference (round-trip parity)."""
     _setup_logging(verbose)
-    console.print(f"\n[bold]Reflex Validate[/bold]")
-    console.print(f"  Export: {export_dir}")
-    console.print(f"  Threshold: {threshold}")
+
+    if init_ci:
+        from reflex.ci_template import emit_ci_template
+        out = Path(".github/workflows/reflex-validate.yml")
+        try:
+            emit_ci_template(out, reflex_version=__version__)
+        except FileExistsError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(2)
+        except Exception as exc:
+            console.print(f"[red]Failed to emit CI template: {exc}[/red]")
+            raise typer.Exit(2)
+        console.print(f"[green]Wrote CI template:[/green] {out}")
+        raise typer.Exit(0)
+
+    if not export_dir:
+        console.print("[red]export_dir is required (unless --init-ci is passed).[/red]")
+        raise typer.Exit(2)
+
+    if device not in ("cpu", "cuda"):
+        console.print(f"[red]--device must be 'cpu' or 'cuda', got: {device}[/red]")
+        raise typer.Exit(2)
+
+    from reflex.validate_roundtrip import ValidateRoundTrip
+
+    try:
+        runner = ValidateRoundTrip(
+            export_dir=Path(export_dir),
+            model_id=model or None,
+            threshold=threshold,
+            num_test_cases=num_cases,
+            seed=seed,
+            device=device,
+        )
+    except FileNotFoundError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2)
+
+    try:
+        result = runner.run()
+    except FileNotFoundError as exc:
+        console.print(f"[red]Missing required file: {exc}[/red]")
+        raise typer.Exit(2)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2)
+    except Exception as exc:
+        if verbose:
+            import traceback
+            traceback.print_exc()
+        console.print(f"[red]Validation failed with unexpected error: {exc}[/red]")
+        raise typer.Exit(2)
+
+    summary = result.get("summary", {})
+    passed = bool(summary.get("passed", False))
+
+    if output_json:
+        print(json.dumps(result, indent=2, default=str))
+    else:
+        console.print("\n[bold]Reflex Validate[/bold]")
+        console.print(f"  Export: {export_dir}")
+        console.print(f"  Model type: {result.get('model_type')}")
+        console.print(f"  Threshold: {result.get('threshold')}")
+
+        per_table = Table(title="Per-fixture results", show_header=True, header_style="bold")
+        per_table.add_column("fixture_idx", justify="right")
+        per_table.add_column("max_abs_diff", justify="right")
+        per_table.add_column("mean_abs_diff", justify="right")
+        per_table.add_column("passed", justify="center")
+        for r in result.get("results", []):
+            ok = bool(r.get("passed"))
+            per_table.add_row(
+                str(r.get("fixture_idx", "")),
+                f"{float(r.get('max_abs_diff', 0)):.2e}",
+                f"{float(r.get('mean_abs_diff', 0)):.2e}",
+                "[green]PASS[/green]" if ok else "[red]FAIL[/red]",
+            )
+        console.print(per_table)
+
+        sum_table = Table(title="Summary", show_header=True, header_style="bold")
+        sum_table.add_column("metric")
+        sum_table.add_column("value")
+        sum_table.add_row("max_abs_diff_across_all", f"{float(summary.get('max_abs_diff_across_all', 0)):.2e}")
+        sum_table.add_row("passed", "[green]PASS[/green]" if passed else "[red]FAIL[/red]")
+        sum_table.add_row("num_cases", str(result.get("num_test_cases")))
+        sum_table.add_row("seed", str(result.get("seed")))
+        sum_table.add_row("threshold", str(result.get("threshold")))
+        console.print(sum_table)
+
+    raise typer.Exit(0 if passed else 1)
 
 
 @app.command(name="bench")

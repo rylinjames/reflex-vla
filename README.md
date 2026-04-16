@@ -48,6 +48,30 @@ That's it. `reflex` auto-detects whether you gave it SmolVLA / pi0 / pi0.5 / GR0
 
 When `onnxruntime-gpu` ships with the TensorRT execution provider (it does in v1.20+), `reflex serve` uses TRT FP16 automatically and caches the engine in `<export_dir>/.trt_cache` so subsequent server starts skip the engine-build cost. The first `reflex serve` takes ~30-90s to warm up; restart is ~1-2s.
 
+## Validation — round-trip ONNX vs PyTorch parity
+
+After exporting, run `reflex validate` to confirm the ONNX graph matches the PyTorch reference within numerical tolerance:
+
+```bash
+# After exporting, validate that ONNX parity holds vs the reference:
+reflex validate ./p0 --model lerobot/pi0_base --threshold 1e-4
+```
+
+Sample passing output (abbreviated):
+
+```
+Per-fixture results
+fixture_idx  max_abs_diff  mean_abs_diff  passed
+0            3.21e-06      8.40e-07       PASS
+1            2.98e-06      7.92e-07       PASS
+...
+Summary
+max_abs_diff_across_all  3.21e-06
+passed                   PASS
+```
+
+Exit codes: `0` pass, `1` fail (any fixture above threshold), `2` error (missing ONNX, bad config). Pipe `--output-json` for CI consumption, or run `reflex validate --init-ci` to scaffold a GitHub Actions workflow at `.github/workflows/reflex-validate.yml`.
+
 ## Composable wedges
 
 Every wedge is a flag on `reflex serve`:

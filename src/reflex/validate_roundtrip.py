@@ -42,20 +42,19 @@ import numpy as np
 import torch
 
 from reflex.checkpoint import detect_model_type, load_checkpoint
+from reflex.fixtures.vla_fixtures import load_fixtures
 from reflex.validate import ValidationResult, validate_outputs
 
-# TODO(Issue 4/5): import the real backends once `_pytorch_backend.py` and
-# `_onnx_backend.py` land. Guarded so Issue 1 can be merged independently.
-try:  # pragma: no cover - import guard exercised only after Issues 4/5 land
-    from reflex import _pytorch_backend  # type: ignore[attr-defined]
-    from reflex import _onnx_backend  # type: ignore[attr-defined]
-except ImportError as _backend_import_error:  # noqa: F841
-    logging.getLogger(__name__).debug(
-        "Cross-runtime backends not yet available (Issue 4/5): %s",
-        _backend_import_error,
-    )
-    _pytorch_backend = None  # type: ignore[assignment]
-    _onnx_backend = None  # type: ignore[assignment]
+# Backends from Issues 4/5 — required at import time now.
+from reflex._pytorch_backend import load_pytorch_backend
+from reflex._onnx_backend import load_onnx_backend
+
+# Per-model action_dim fallback when reflex_config.json doesn't specify it.
+_ACTION_DIM_FALLBACK: dict[str, int] = {
+    "smolvla": 6,
+    "pi0": 14,
+    "gr00t": 64,
+}
 
 logger = logging.getLogger(__name__)
 
@@ -172,66 +171,82 @@ class ValidateRoundTrip:
 
         Loads both backends, generates ``num_test_cases`` seeded fixtures plus
         their shared initial-noise tensors, runs each fixture through both
-        runtimes, compares outputs, and aggregates the results. The returned
-        dict has a ``status`` field of ``"pass"``, ``"fail"``, or ``"error"``
-        which the CLI maps to exit codes 0/1/2.
+        runtimes, compares outputs, and aggregates the results.
         """
-        raise NotImplementedError("filled in by Issue 6")
+        self.pytorch = self._load_pytorch()
+        self.onnx = self._load_onnx()
+
+        fixtures = load_fixtures(self.model_type, self.num_test_cases, self.seed)
+        rng = torch.Generator(device="cpu").manual_seed(self.seed)
+
+        per_fixture: list[dict[str, Any]] = []
+        for idx, (image, prompt, state) in enumerate(fixtures):
+            noise = self._generate_initial_noise(rng)
+            pt_out = self.pytorch.forward(image, prompt, state, noise)
+            onnx_out = self.onnx.forward(image, prompt, state, noise)
+            result = self._compare(pt_out, onnx_out)
+            result["fixture_idx"] = idx
+            per_fixture.append(result)
+
+        return self._aggregate(per_fixture)
 
     # ----------------------------------------------------------------- private
 
     def _load_pytorch(self) -> Any:
-        """Build and return the PyTorch reference backend for this export.
-
-        Delegates to :mod:`reflex._pytorch_backend` (Issue 4) which knows how
-        to reconstruct the decomposed expert stack per model type and load
-        weights via :func:`reflex.checkpoint.load_checkpoint`.
-        """
-        raise NotImplementedError("filled in by Issue 4")
+        """Build and return the PyTorch reference backend for this export."""
+        return load_pytorch_backend(self.export_dir, self.model_id, self.device)
 
     def _load_onnx(self) -> Any:
-        """Build and return the ONNX runtime backend for this export.
-
-        Delegates to :mod:`reflex._onnx_backend` (Issue 5) which constructs
-        an :class:`onnxruntime.InferenceSession` over the exported graph(s)
-        and reads input shapes / step counts from ``reflex_config.json``.
-        """
-        raise NotImplementedError("filled in by Issue 5")
+        """Build and return the ONNX runtime backend for this export."""
+        return load_onnx_backend(self.export_dir, self.device)
 
     def _generate_initial_noise(self, rng: torch.Generator) -> np.ndarray:
-        """Generate the initial-noise tensor shared by both backends.
-
-        Produces the noise exactly once using the supplied seeded
-        :class:`torch.Generator`, converts it to a contiguous numpy array, and
-        returns that array so both runtimes consume byte-identical inputs.
-        This is the seed-bridge: ``torch.manual_seed`` does not seed numpy.
-        """
-        raise NotImplementedError("filled in by Issue 4")
+        """Generate the initial-noise tensor shared by both backends."""
+        chunk_size = int(
+            self.config.get("action_chunk_size")
+            or self.config.get("chunk_size")
+            or 50
+        )
+        action_dim = int(
+            self.config.get("action_dim")
+            or _ACTION_DIM_FALLBACK.get(self.model_type, 6)
+        )
+        noise = torch.randn((chunk_size, action_dim), generator=rng).numpy().astype(np.float32)
+        return noise
 
     def _compare(
         self,
         pytorch_out: np.ndarray,
         onnx_out: np.ndarray,
     ) -> dict[str, Any]:
-        """Compare a single fixture's PyTorch and ONNX outputs.
-
-        Wraps :func:`reflex.validate.validate_outputs` with this run's
-        threshold, returning the per-fixture :class:`ValidationResult` as a
-        plain dict ready for JSON serialization.
-        """
-        raise NotImplementedError("filled in by Issue 6")
+        """Compare a single fixture's PyTorch and ONNX outputs."""
+        result = validate_outputs(
+            pytorch_out, onnx_out, threshold=self.threshold, name="roundtrip"
+        )
+        return result.to_dict()
 
     def _aggregate(
         self,
         per_fixture_results: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        """Aggregate per-fixture results into a single run summary.
+        """Aggregate per-fixture results into a single run summary."""
+        if per_fixture_results:
+            max_abs = max(float(r["max_abs_diff"]) for r in per_fixture_results)
+        else:
+            max_abs = 0.0
+        passed = all(bool(r["passed"]) for r in per_fixture_results) if per_fixture_results else False
 
-        Collapses the per-fixture max/mean/rel diffs into worst-case and mean
-        statistics, derives the overall ``status`` (``pass``/``fail``), and
-        emits the JSON-serializable payload returned by :meth:`run`.
-        """
-        raise NotImplementedError("filled in by Issue 6")
+        return {
+            "model_type": self.model_type,
+            "threshold": self.threshold,
+            "num_test_cases": self.num_test_cases,
+            "seed": self.seed,
+            "results": per_fixture_results,
+            "summary": {
+                "max_abs_diff_across_all": max_abs,
+                "passed": passed,
+            },
+        }
 
 
 __all__ = [
