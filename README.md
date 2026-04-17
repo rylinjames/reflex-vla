@@ -2,6 +2,8 @@
 
 **The deployment layer for VLAs** — take a Vision-Language-Action model off the training cluster and onto a robot.
 
+**Verified parity.** Reflex's native export path for SmolVLA matches the reference PyTorch policy to **cos = 1.0000** end-to-end (first-action, shared noise). Per-stage: vision encoder cos=1.0000, text embedder cos=1.0000, state projection cos=1.0000, single self-attn layer cos=1.0000 to 1e-5. Reproducer: `REFLEX_NATIVE=1 python scripts/local_full_diff.py` at commit `0616265`. The full claim ledger (verified / unverified / unmeasured) lives in [reflex_context/measured_numbers.md](reflex_context/measured_numbers.md).
+
 Cross-framework ONNX export, edge-first serving, composable runtime wedges (safety, adaptive denoising, cloud-edge split, pre-flight validation). One CLI, seven verbs.
 
 **Want a deeper walkthrough?** See [docs/getting_started.md](docs/getting_started.md) for a 30-min guide covering safety configs, fleet-mode batching, deadline enforcement, and common troubleshooting.
@@ -134,6 +136,8 @@ Each wedge works standalone for scripting, and every wedge that belongs in the i
 **Isn't:** a training framework (PyTorch/JAX own that) or a cloud inference provider (vLLM/Baseten own that). Reflex's moat is the deployment toolchain: cross-framework ONNX, TensorRT FP16 engines that beat `torch.compile` on cloud GPU by 2.6-3.3× *and* run on Jetson, deterministic deploy graph, and the wedge composition for production robot deployments.
 
 ## Performance — Reflex TRT FP16 vs PyTorch alternatives
+
+> **Note (2026-04-17):** The latency tables below were measured on the earlier decomposed-ONNX path. The native path (lerobot `SmolVLAPolicy` + `DecomposedRMSNorm` swap) supersedes that path and has cos=1.0000 parity, but has not yet been re-benchmarked for latency. Treat these numbers as directional pending re-verification. See [reflex_context/measured_numbers.md](reflex_context/measured_numbers.md) for what's currently verified.
 
 Per-denoising-step latency on Modal A10G (the closest cloud GPU to Jetson Orin's Ampere architecture). Lower is better:
 

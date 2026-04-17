@@ -10,6 +10,8 @@ Hi HN —
 
 I built Reflex because the path from "we have a trained Vision-Language-Action model" to "it runs on a real robot" is brutal. Every VLA team writes their own export pipeline and most of them break.
 
+**What's verified today:** the native export path for SmolVLA matches the reference PyTorch policy to cos = 1.0000 end-to-end. Reproducer lives in the repo.
+
 Reflex covers the four current flow-matching VLAs (SmolVLA from HuggingFace, pi0 + pi0.5 from Physical Intelligence via lerobot, and NVIDIA's GR00T N1.6) with one CLI:
 
 ```bash
