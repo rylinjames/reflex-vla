@@ -26,6 +26,7 @@ Internal knowledge preservation for the Reflex VLA project. This folder is the s
 ```
 reflex_context/
 ├── README.md                                    ← you are here
+├── measured_numbers.md                          — verified / unverified / unmeasured (single source of truth for claims)
 ├── _raw/                                        — verbatim session / git / script extracts (source of truth)
 │   ├── sessions_md.md
 │   ├── modal_scripts.md
@@ -123,6 +124,7 @@ Note: `01_architecture`, `02_bugs_fixed`, `03_research`, `04_iteration_lessons`,
 - Why does `subprocess.run(capture_output=True)` look like it hangs? → `04_iteration_lessons/subprocess_buffering.md` (answer: use a file for stdout, not PIPE; stream line-by-line)
 
 **Benchmarks**
+- **What can we actually claim?** → `measured_numbers.md` (verified / unverified / unmeasured — cite only from Verified)
 - What's the latency per model? → `06_experiments/latency_benchmarks.md`
 - Does adaptive denoising work? → `06_experiments/adaptive_denoising_validation.md` (answer: only on pi0; 58% savings; never triggers on SmolVLA, drifts on pi0.5/GR00T)
 - Does batching work? → `06_experiments/batching_validation.md` (answer: 2.88× on pi0 at batch=16; TRT EP auto-disabled when `max_batch > 1` because static-shape ONNX rebuilds engine per call = 34s)
