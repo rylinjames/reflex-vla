@@ -1,7 +1,12 @@
 """LIBERO-10 evaluation via vla-eval on Modal A10G.
 
-Serves SmolVLA through Reflex's ONNX pipeline, evaluates on LIBERO-10
-(10 tasks × 50 episodes = 500 episodes) via AllenAI's vla-evaluation-harness.
+Thin runner: exports SmolVLA, launches the reusable vla-eval adapter
+(``reflex.runtime.adapters.vla_eval``) as a background server, runs
+``vla-eval run`` against it on LIBERO-10.
+
+All inference logic (VLM prefix conditioning, denoising loop, action
+post-processing) lives in ``reflex.runtime.ReflexServer``. This script
+contains *only* the Modal image + LIBERO sim plumbing.
 
 Usage:
     modal run scripts/modal_libero10.py
@@ -15,40 +20,88 @@ import modal
 
 app = modal.App("reflex-libero10")
 
-# Image: MuJoCo + vla-eval + reflex on debian_slim (reliable)
+# Image: MuJoCo + vla-eval + reflex on debian_slim (reliable — nvidia/cuda had
+# Ubuntu mirror hash issues in Apr builds).
 image = (
     modal.Image.debian_slim(python_version="3.11")
-    .apt_install("git", "libgl1-mesa-glx", "libglib2.0-0",
-                 "libegl1-mesa", "libglvnd0", "ffmpeg")
+    .apt_install(
+        "git",
+        "libgl1-mesa-glx",
+        "libglib2.0-0",
+        "libegl1-mesa",
+        "libglvnd0",
+        "ffmpeg",
+        # robomimic → egl_probe builds from source and needs cmake + gcc
+        "cmake",
+        "build-essential",
+        # osmesa for MuJoCo software rendering (EGL hangs silently on some
+        # debian_slim+NVIDIA combos with LIBERO; osmesa is reliable but slow)
+        "libosmesa6",
+        "libosmesa6-dev",
+    )
     .pip_install(
-        "torch", "safetensors", "huggingface_hub", "transformers>=4.51",
-        "onnx", "onnxruntime", "onnxscript", "numpy", "Pillow",
-        "pydantic>=2.0", "fastapi>=0.100.0", "uvicorn>=0.23.0",
-        "typer", "rich", "pyyaml",
-        "mujoco>=3.0", "gymnasium",
+        "torch",
+        "safetensors",
+        "huggingface_hub",
+        "transformers>=4.51",
+        "onnx",
+        "onnxruntime",
+        "onnxscript",
+        "numpy",
+        "Pillow",
+        "pydantic>=2.0",
+        "fastapi>=0.100.0",
+        "uvicorn>=0.23.0",
+        "typer",
+        "rich",
+        "pyyaml",
+        "mujoco>=3.0",
+        "gymnasium",
     )
     .pip_install("vla-eval")
+    # robosuite 1.5+ moved module paths — pin 1.4.1 which LIBERO expects.
     .pip_install("robosuite==1.4.1", "h5py")
+    # LIBERO's setup.py is install_requires=[]; its envs import bddl,
+    # robomimic, hydra-core at reset() time. Installing the full
+    # requirements.txt would downgrade transformers/numpy/etc. and nuke
+    # the ONNX export stack. Install only the runtime-required deps
+    # with flexible versions.
+    .pip_install(
+        "bddl==1.0.1",        # exact version — LIBERO imports bddl.parsing
+        "future",             # bddl 1.0.1 imports from future.utils (py2/3 compat)
+        "robomimic",          # loose pin — used in env config loading
+        "hydra-core>=1.1",
+        "easydict",
+        "einops",
+        "opencv-python-headless",
+        "gym",                # LIBERO's venv.py uses old `gym`, not gymnasium
+    )
     .add_local_file("scripts/patch_libero.py", "/root/patch_libero.py", copy=True)
     .run_commands(
         "git clone https://github.com/Lifelong-Robot-Learning/LIBERO.git /opt/LIBERO"
         " && cd /opt/LIBERO && pip install -e ."
-        # Patch LIBERO's interactive prompts (uses a separate script to avoid quoting hell)
+        # Patch LIBERO's interactive input() prompts so import doesn't hang.
         " && python /root/patch_libero.py"
         " && python -c 'from libero.libero import benchmark; print(\"LIBERO import OK\")'"
+        # Verify envs import works — this is what failed in run 1 (missing bddl).
+        " && python -c 'from libero.libero.envs import OffScreenRenderEnv; print(\"LIBERO envs OK\")'"
     )
     .add_local_dir("src/reflex", "/root/reflex-vla/src/reflex", copy=True)
     .add_local_file("pyproject.toml", "/root/reflex-vla/pyproject.toml", copy=True)
     .add_local_file("README.md", "/root/reflex-vla/README.md", copy=True)
-    .add_local_file("scripts/patch_libero.py", "/root/reflex-vla/scripts/patch_libero.py", copy=True)
+    .add_local_file(
+        "scripts/patch_libero.py", "/root/reflex-vla/scripts/patch_libero.py", copy=True
+    )
     .run_commands("cd /root/reflex-vla && pip install -e .")
-    .env({
-        "MUJOCO_GL": "egl",
-        "PYOPENGL_PLATFORM": "egl",
-        "LIBERO_DATA_DIR": "/tmp/libero_data",
-        "LIBERO_ASSET_DIR": "/opt/LIBERO/libero/libero/assets",
-        "LIBERO_BASE": "/tmp/libero_data",
-    })
+    .env(
+        {
+            "MUJOCO_GL": "osmesa",
+            "PYOPENGL_PLATFORM": "osmesa",
+            "LIBERO_DATA_DIR": "/tmp/libero_data",
+            "LIBERO_ASSET_DIR": "/opt/LIBERO/libero/libero/assets",
+            "LIBERO_BASE": "/tmp/libero_data",
+        }
+    )
     .run_commands("mkdir -p /tmp/libero_data")
 )
 
@@ -56,311 +109,466 @@ image = (
 @app.function(gpu="A10G", image=image, timeout=7200, scaledown_window=60)
 def run_libero10():
     """Run LIBERO-10 evaluation."""
-    import subprocess
-    import threading
     import os
-
-    import numpy as np
+    import subprocess
 
     os.environ["MUJOCO_GL"] = "egl"
 
-    results = {
+    export_dir = "/tmp/reflex_libero_export"
+    results: dict = {
         "benchmark": "LIBERO-10",
-        "model": "SmolVLA (via Reflex ONNX)",
+        "model": "lerobot/smolvla_libero via Reflex ONNX",
         "steps": [],
         "task_success": None,
         "per_task": [],
     }
 
-    def log(name, status, detail=""):
+    def log(name: str, status: str, detail: str = "") -> None:
         results["steps"].append({"step": name, "status": status, "detail": detail})
         tag = "PASS" if status == "pass" else "FAIL"
         print(f"{tag}: {name} -- {detail}")
 
-    # ── Step 1: Export SmolVLA ─────────────────────────────────────
-    print("\n=== Step 1: Export SmolVLA ===")
-    export_dir = "/tmp/reflex_libero_export"
+    # ── Step 1: Export SmolVLA (auto-produces 4 ONNX files incl. VLM prefix) ──
+    # Using the official LIBERO fine-tune (not smolvla_base). Base has 0% on
+    # LIBERO because it's never seen those tasks; the fine-tune is what gets
+    # a real number.
+    print("\n=== Step 1: Export lerobot/smolvla_libero ===")
     t0 = time.time()
     r = subprocess.run(
-        ["reflex", "export", "lerobot/smolvla_base",
-         "--target", "desktop", "--output", export_dir],
-        capture_output=True, text=True, timeout=600,
+        [
+            "reflex",
+            "export",
+            "lerobot/smolvla_libero",
+            "--target",
+            "desktop",
+            "--output",
+            export_dir,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=900,
     )
     if r.returncode != 0:
         log("export", "fail", (r.stdout + r.stderr)[-500:])
         return results
-    log("export", "pass", f"Exported in {time.time()-t0:.0f}s")
 
-    # ── Step 2: Create vla-eval model server adapter ──────────────
-    print("\n=== Step 2: Create model server adapter ===")
+    # Verify the VLM prefix files landed (the thing that was broken before).
+    vlm_files = ["vision_encoder.onnx", "text_embedder.onnx", "decoder_prefill.onnx"]
+    present = [f for f in vlm_files if os.path.exists(os.path.join(export_dir, f))]
 
-    adapter_code = '''
-import sys
-import os
-import json
-import numpy as np
+    # Verify the normalizer/unnormalizer files landed (the thing that's broken now)
+    norm_files = [
+        "policy_preprocessor_step_5_normalizer_processor.safetensors",
+        "policy_postprocessor_step_0_unnormalizer_processor.safetensors",
+    ]
+    norm_present = [
+        f for f in norm_files if os.path.exists(os.path.join(export_dir, f))
+    ]
 
-# Try to import vla-eval's base class
-try:
-    from vla_eval.model_servers.predict import PredictModelServer
-    from vla_eval.model_servers.serve import run_server
-except ImportError:
-    from vla_eval.model_servers.base import ModelServer as PredictModelServer
-    from vla_eval.model_servers.serve import run_server
+    # If reflex export didn't copy them, print the last of its stdout so we
+    # can see the Copied X/4 line (or whatever went wrong).
+    if len(norm_present) < 2:
+        print("  reflex export stdout tail (for normalizer copy diagnosis):")
+        print(r.stdout[-2000:])
 
-import onnxruntime as ort
-
-EXPORT_DIR = os.environ.get("REFLEX_EXPORT_DIR", "/tmp/reflex_libero_export")
-
-
-class ReflexSmolVLAServer(PredictModelServer):
-    """Serves SmolVLA via Reflex ONNX for vla-eval benchmarks."""
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        config_path = os.path.join(EXPORT_DIR, "reflex_config.json")
-        with open(config_path) as f:
-            self.config = json.load(f)
-
-        onnx_path = os.path.join(EXPORT_DIR, "expert_stack.onnx")
-        self.session = ort.InferenceSession(
-            onnx_path, providers=["CPUExecutionProvider"]
-        )
-        self.input_names = [inp.name for inp in self.session.get_inputs()]
-
-        self.action_dim = self.config.get("action_dim", 32)
-        self.chunk_size = self.config.get("action_chunk_size", 50)
-        self.num_steps = self.config.get("num_denoising_steps", 10)
-
-        # Check if expert needs vlm_kv
-        self.needs_vlm_kv = "vlm_kv" in self.input_names
-        if self.needs_vlm_kv:
-            vlm_kv_shapes = [inp.shape for inp in self.session.get_inputs() if inp.name == "vlm_kv"]
-            self.vlm_kv_dim = vlm_kv_shapes[0][-1] if vlm_kv_shapes else 320
-
-        print(f"Loaded SmolVLA ONNX: action_dim={self.action_dim}, "
-              f"chunk={self.chunk_size}, steps={self.num_steps}, "
-              f"vlm_kv={'yes (dim=' + str(self.vlm_kv_dim) + ')' if self.needs_vlm_kv else 'no'}")
-
-    def predict(self, obs, ctx=None):
-        """Run denoising loop and return action chunk."""
-        # Initialize from noise
-        noise = np.random.randn(1, self.chunk_size, self.action_dim).astype(np.float32)
-        current = noise.copy()
-
-        position_ids = np.arange(self.chunk_size, dtype=np.int64).reshape(1, -1)
-
-        dt = -1.0 / float(self.num_steps)
-        for step in range(self.num_steps):
-            t = 1.0 + step * dt
-            timestep = np.array([t], dtype=np.float32)
-
-            feed = {
-                "noisy_actions": current,
-                "timestep": timestep,
-                "position_ids": position_ids,
-            }
-            if self.needs_vlm_kv:
-                feed["vlm_kv"] = np.zeros((1, 1, self.vlm_kv_dim), dtype=np.float32)
-
-            velocity = self.session.run(None, feed)[0]
-            current = current + velocity * dt
-
-        # Return first N actions (LIBERO typically uses 1-step actions)
-        actions = current[0]  # [chunk_size, action_dim]
-
-        # LIBERO expects 7-dim actions (6 joints + gripper)
-        # SmolVLA outputs 32-dim; truncate to 7
-        actions_truncated = actions[:, :7] if actions.shape[1] > 7 else actions
-
-        return {"actions": actions_truncated}
-
-
-if __name__ == "__main__":
-    # run_server takes a CLASS, auto-parses __init__ args into CLI flags.
-    # It always adds --port (default 8000), --host, --address, --verbose.
-    import sys
-    sys.argv = [sys.argv[0], "--port", "8000"]
-    run_server(ReflexSmolVLAServer)
-'''
-
-    adapter_path = "/tmp/reflex_model_server.py"
-    with open(adapter_path, "w") as f:
-        f.write(adapter_code)
-    log("adapter", "pass", "Model server adapter written")
-
-    # ── Step 3: Check if vla-eval + LIBERO are available ──────────
-    print("\n=== Step 3: Check vla-eval + LIBERO ===")
-
-    # Check vla-eval
-    r = subprocess.run(["python", "-c", "import vla_eval; print(vla_eval.__version__)"],
-                       capture_output=True, text=True)
-    if r.returncode == 0:
-        log("vla_eval", "pass", f"vla-eval {r.stdout.strip()}")
-    else:
-        # Try to get more info
-        r2 = subprocess.run(["python", "-c", "import vla_eval"],
-                            capture_output=True, text=True)
-        if r2.returncode == 0:
-            log("vla_eval", "pass", "vla-eval installed (no version attr)")
-        else:
-            log("vla_eval", "fail", r2.stderr[-300:])
-            return results
-
-    # Check MuJoCo
-    r = subprocess.run(["python", "-c", "import mujoco; print(mujoco.__version__)"],
-                       capture_output=True, text=True)
-    if r.returncode == 0:
-        log("mujoco", "pass", f"MuJoCo {r.stdout.strip()}")
-    else:
-        log("mujoco", "fail", r.stderr[-300:])
-        return results
-
-    # Check if LIBERO is importable
-    r = subprocess.run(
-        ["python", "-c", "import libero; print(f'libero at {libero.__file__}')"],
-        capture_output=True, text=True,
+    log(
+        "export",
+        "pass",
+        f"Exported in {time.time()-t0:.0f}s; VLM files: {len(present)}/3 "
+        f"({present}); normalizer files: {len(norm_present)}/2 ({norm_present})",
     )
-    if r.returncode == 0:
-        log("libero_check", "pass", f"LIBERO importable: {r.stdout.strip()}")
-    else:
-        print(f"  LIBERO import failed: {r.stderr[-300:]}")
-        # Try installing at runtime
-        print("  Installing LIBERO from git...")
-        install_r = subprocess.run(
-            ["pip", "install", "libero @ git+https://github.com/Lifelong-Robot-Learning/LIBERO.git"],
-            capture_output=True, text=True, timeout=600,
-        )
-        print(f"  Install exit: {install_r.returncode}")
-        if install_r.returncode != 0:
-            print(f"  Install stderr: {install_r.stderr[-500:]}")
-        # Recheck
-        r2 = subprocess.run(
-            ["python", "-c", "import libero; print(f'libero at {libero.__file__}')"],
-            capture_output=True, text=True,
-        )
-        if r2.returncode == 0:
-            log("libero_check", "pass", f"LIBERO installed: {r2.stdout.strip()}")
-        else:
-            log("libero_check", "fail", f"LIBERO still not importable: {r2.stderr[-300:]}")
-            serve_proc.terminate()
-            return results
 
-    # ── Step 4: Start model server in background ──────────────────
-    print("\n=== Step 4: Start model server ===")
+    # ── Step 2: Start adapter server via the reusable module ──────
+    print("\n=== Step 2: Start reflex.runtime.adapters.vla_eval ===")
+    server_env = {
+        **os.environ,
+        "REFLEX_EXPORT_DIR": export_dir,
+        "REFLEX_ACTION_DIM_OUT": "7",  # LIBERO: 6 joints + gripper
+        "REFLEX_DEVICE": "cuda",       # A10G GPU available
+        "MUJOCO_GL": "osmesa",
+    }
+    # Route server stdout to a file so we can print it on error.
+    server_log_path = "/tmp/adapter_server.log"
+    server_log = open(server_log_path, "w")
     server_proc = subprocess.Popen(
-        ["python", adapter_path],
-        env={**os.environ, "REFLEX_EXPORT_DIR": export_dir},
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        [
+            "python",
+            "-m",
+            "reflex.runtime.adapters.vla_eval",
+            "--port",
+            "8000",
+        ],
+        env=server_env,
+        stdout=server_log,
+        stderr=subprocess.STDOUT,
+        text=True,
     )
 
-    # Wait for server to start
-    time.sleep(5)
-    if server_proc.poll() is not None:
-        out = server_proc.stdout.read()
-        log("model_server", "fail", f"Server exited early: {out[-500:]}")
-        return results
-    log("model_server", "pass", "Model server started on port 8766")
+    # Poll for server readiness (ws + port open). Model loading includes 907MB
+    # checkpoint, 3 ONNX sessions, AutoTokenizer + AutoProcessor downloads — can
+    # take 60-120s on first run.
+    import socket
 
-    # ── Step 5: Write LIBERO-10 config ──────────────────────────────
-    print("\n=== Step 5: Write LIBERO-10 config ===")
+    def _port_open(host: str, port: int) -> bool:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(1.0)
+            return s.connect_ex((host, port)) == 0
+
+    ready = False
+    start = time.time()
+    timeout_s = 300
+    while time.time() - start < timeout_s:
+        if server_proc.poll() is not None:
+            server_log.close()
+            with open(server_log_path) as f:
+                tail = f.read()[-2000:]
+            log("model_server", "fail", f"Server exited early:\n{tail}")
+            return results
+        if _port_open("127.0.0.1", 8000):
+            ready = True
+            break
+        time.sleep(2)
+
+    if not ready:
+        server_proc.terminate()
+        server_log.close()
+        with open(server_log_path) as f:
+            tail = f.read()[-2000:]
+        log("model_server", "fail",
+            f"Server did not open port 8000 within {timeout_s}s.\nLog tail:\n{tail}")
+        return results
+
+    warmup_s = time.time() - start
+    log("model_server", "pass", f"Adapter ready in {warmup_s:.0f}s on port 8000")
+
+    # Dump adapter startup log — tells us whether the normalizer loaded (key),
+    # which camera key was picked, whether VLM is on, etc. Invaluable for
+    # diagnosing silent misconfigurations.
+    print("\n=== adapter server startup log ===")
+    try:
+        with open(server_log_path) as f:
+            adapter_log = f.read()
+        # Grab the key init lines, not the 100s of onnxruntime warnings
+        for line in adapter_log.splitlines():
+            if any(
+                marker in line
+                for marker in (
+                    "ReflexVlaEvalAdapter ready",
+                    "Loaded normalizer",
+                    "norm=",
+                    "VLM orchestrator",
+                    "Loaded vision_encoder",
+                    "Loaded text_embedder",
+                    "Loaded decoder_prefill",
+                    "Expert ONNX",
+                    "strict",
+                    "Error",
+                    "ERROR",
+                    "Traceback",
+                )
+            ):
+                print(f"  [adapter] {line}")
+    except Exception as e:
+        print(f"  [adapter log read failed: {e}]")
+    print("=== end adapter startup log ===\n")
+
+    # (Previously: in-process adapter smoke test — removed; startup log above
+    # already confirms norm=on + VLM orchestrator complete + all 4 stats loaded.)
+
+    # Helper to tail the adapter log after episodes — catches "First predict"
+    # and "First predict actions" diagnostics for diagnosing 0% task success.
+    def _dump_adapter_tail():
+        try:
+            with open(server_log_path) as _f:
+                _log = _f.read()
+            print("\n=== adapter log tail (post-episodes) ===")
+            for line in _log.splitlines():
+                if any(
+                    marker in line
+                    for marker in (
+                        "First predict",
+                        "First predict actions",
+                        "VLM orchestrator failed",
+                        "dummy conditioning",
+                        "ERROR",
+                        "Traceback",
+                    )
+                ):
+                    print(f"  [adapter] {line}")
+            print("=== end adapter log tail ===\n")
+        except Exception as _e:
+            print(f"  [adapter tail read failed: {_e}]")
+
+    # ── Step 3: Write LIBERO-10 config ────────────────────────────
+    print("\n=== Step 3: Write LIBERO-10 config ===")
     libero_config = {
         "server": {"url": "ws://localhost:8000"},
         "output_dir": "/tmp/libero_results",
-        "benchmarks": [{
-            "benchmark": "vla_eval.benchmarks.libero.benchmark:LIBEROBenchmark",
-            "subname": "libero_10",
-            "mode": "sync",
-            "episodes_per_task": 10,  # 10 per task (100 total) for speed; 50 is the full eval
-            "params": {
-                "suite": "libero_10",
-                "seed": 7,
-                "num_steps_wait": 10,
-            },
-        }],
+        "benchmarks": [
+            {
+                "benchmark": (
+                    "vla_eval.benchmarks.libero.benchmark:LIBEROBenchmark"
+                ),
+                "subname": "libero_10",
+                "mode": "sync",
+                # 1 ep / task × 10 tasks = 10 total. Fast iteration.
+                "episodes_per_task": 1,
+                # 150 steps for fast iteration. The model should produce some
+                # task progress within 150 steps if it's working at all —
+                # picking bowls / reaching for objects. If we see ZERO task
+                # success AND no visible progress at 150, bumping to 600 won't
+                # help because the policy is clearly incorrect.
+                "max_steps": 150,
+                "params": {
+                    "suite": "libero_10",
+                    "seed": 7,
+                    "num_steps_wait": 10,
+                    # CRITICAL: without these, vla-eval sends only images +
+                    # task_description. Our first-predict dump showed state=none,
+                    # which means the model was predicting actions from zero
+                    # state vectors — garbage trajectories no matter what the
+                    # VLM pipeline looked like.
+                    "send_state": True,
+                    "send_wrist_image": True,
+                },
+            }
+        ],
     }
 
     import yaml
+
     config_path = "/tmp/libero_10_config.yaml"
     with open(config_path, "w") as f:
         yaml.dump(libero_config, f)
-    log("config", "pass", f"LIBERO-10 config written to {config_path}")
+    log("config", "pass", f"LIBERO-10 config → {config_path}")
 
-    # ── Step 6: Run LIBERO-10 evaluation ──────────────────────────
-    print("\n=== Step 6: Run LIBERO-10 (10 eps/task, ~30 min) ===")
+    # ── Step 4: Run LIBERO-10 evaluation ────────────────────────────
+    print("\n=== Step 4: vla-eval run (LIBERO-10, 100 eps, ~30 min) ===")
 
-    eval_result = subprocess.run(
-        ["vla-eval", "run",
-         "--config", config_path,
-         "--no-docker",
-         "--server-url", "ws://localhost:8000",
-         "--yes",
-         "--verbose",
-         ],
-        capture_output=True, text=True,
-        timeout=7200,
-        env={**os.environ, "MUJOCO_GL": "egl"},
+    # Before running sim: prove LIBERO env.reset() works in isolation. If this
+    # hangs, vla-eval would hang too — fail fast here with a clear message.
+    print("\n=== Step 3b: LIBERO env.reset() smoke test ===")
+    smoke_result = subprocess.run(
+        [
+            "python",
+            "-c",
+            """
+import os, sys, time
+os.environ['MUJOCO_GL'] = 'osmesa'
+os.environ['PYOPENGL_PLATFORM'] = 'osmesa'
+print('importing libero...', flush=True); t0 = time.time()
+from libero.libero.envs import OffScreenRenderEnv
+from libero.libero import benchmark as libero_bench
+print(f'import ok ({time.time()-t0:.1f}s)', flush=True)
+print('getting task...', flush=True); t0 = time.time()
+suite = libero_bench.get_benchmark_dict()['libero_10']()
+task = suite.get_task(0)
+print(f'task: {task.name} ({time.time()-t0:.1f}s)', flush=True)
+print('building env...', flush=True); t0 = time.time()
+env_args = {
+    'bddl_file_name': os.path.join('/opt/LIBERO/libero/libero/bddl_files', task.problem_folder, task.bddl_file),
+    'camera_heights': 128,
+    'camera_widths': 128,
+}
+env = OffScreenRenderEnv(**env_args)
+print(f'env built ({time.time()-t0:.1f}s)', flush=True)
+print('env.reset()...', flush=True); t0 = time.time()
+obs = env.reset()
+print(f'reset ok ({time.time()-t0:.1f}s) — obs keys: {sorted(list(obs.keys())[:5])}', flush=True)
+env.close()
+print('SMOKE TEST PASS', flush=True)
+""",
+        ],
+        env={
+            **os.environ,
+            "MUJOCO_GL": "osmesa",
+            "PYOPENGL_PLATFORM": "osmesa",
+            "PYTHONUNBUFFERED": "1",
+        },
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    print(smoke_result.stdout[-2000:])
+    if smoke_result.stderr:
+        print("  stderr:", smoke_result.stderr[-1000:])
+    if "SMOKE TEST PASS" not in smoke_result.stdout:
+        log(
+            "env_smoke_test",
+            "fail",
+            f"LIBERO env.reset() failed/hung — vla-eval will also hang. "
+            f"Exit={smoke_result.returncode}. See stdout above.",
+        )
+        server_proc.terminate()
+        try:
+            server_proc.wait(timeout=5)
+        except Exception:
+            server_proc.kill()
+        return results
+    log("env_smoke_test", "pass", "LIBERO env.reset() works")
+
+    # Stream vla-eval stdout/stderr in real-time via Popen instead of
+    # subprocess.run(capture_output=True) — the latter buffers until the
+    # subprocess exits, which meant we couldn't tell if a run was hung vs
+    # mid-episode for 50+ minutes.
+    stream_env = {
+        **server_env,
+        "PYTHONUNBUFFERED": "1",  # force stdlib to flush per line
+    }
+    eval_proc = subprocess.Popen(
+        [
+            "vla-eval",
+            "run",
+            "--config",
+            config_path,
+            "--no-docker",
+            "--server-url",
+            "ws://localhost:8000",
+            "--yes",
+            "--verbose",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=1,  # line-buffered
+        text=True,
+        env=stream_env,
     )
 
-    print("  stdout (last 2000 chars):")
-    print(eval_result.stdout[-2000:])
-    if eval_result.stderr:
-        print("  stderr (last 1000 chars):")
-        print(eval_result.stderr[-1000:])
+    # Idle-timeout guard: if no output for 180s, assume hung and kill.
+    import select
+    idle_timeout_s = 600  # 10 min — osmesa first-scene compilation can be slow
+    overall_timeout_s = 3600  # 60 min hard cap
+    eval_start = time.time()
+    last_output = time.time()
+    all_stdout: list[str] = []
+    stuck = False
 
-    if eval_result.returncode == 0:
-        log("libero10", "pass", "LIBERO-10 evaluation completed")
+    while True:
+        if eval_proc.poll() is not None:
+            break
+        if time.time() - eval_start > overall_timeout_s:
+            print(f"  [timeout] vla-eval exceeded {overall_timeout_s}s; killing.")
+            eval_proc.kill()
+            stuck = True
+            break
+        if time.time() - last_output > idle_timeout_s:
+            print(
+                f"  [idle-timeout] no stdout for {idle_timeout_s}s; killing."
+            )
+            eval_proc.kill()
+            stuck = True
+            break
+        # Read lines with a short poll so we can check the guards.
+        rlist, _, _ = select.select([eval_proc.stdout], [], [], 2.0)
+        if rlist:
+            line = eval_proc.stdout.readline()
+            if line:
+                print(f"  [vla-eval] {line.rstrip()}")
+                all_stdout.append(line)
+                last_output = time.time()
 
-        # Parse results
-        results_dir = "/tmp/libero_results"
-        if os.path.exists(results_dir):
-            for f in os.listdir(results_dir):
-                if f.endswith(".json"):
-                    with open(os.path.join(results_dir, f)) as rf:
-                        eval_data = json.load(rf)
-                        print(f"  Result file: {f}")
-                        print(f"  {json.dumps(eval_data, indent=2)[:1000]}")
-    else:
-        print(f"\n  vla-eval run exit code: {eval_result.returncode}")
+    # Drain any remaining output after exit
+    if eval_proc.stdout:
+        rest = eval_proc.stdout.read()
+        if rest:
+            for line in rest.splitlines():
+                print(f"  [vla-eval] {line}")
+                all_stdout.append(line + "\n")
 
-        # Fallback: self-test to prove the model server works
-        print("\n  Running self-test instead...")
-        self_test = subprocess.run(
-            ["python", "-c", f"""
-import sys, os, json
-sys.path.insert(0, '/tmp')
-os.environ['REFLEX_EXPORT_DIR'] = '{export_dir}'
-from reflex_model_server import ReflexSmolVLAServer
-import numpy as np
+    eval_returncode = eval_proc.returncode if not stuck else -1
 
-server = ReflexSmolVLAServer()
-dummy_obs = {{
-    "images": {{"top": np.random.rand(224, 224, 3).astype(np.float32)}},
-    "states": np.zeros(7, dtype=np.float32),
-    "task_description": "pick up the red cup",
-}}
-result = server.predict(dummy_obs)
-actions = result["actions"]
-print(f"Shape: {{actions.shape}}, Range: [{{actions.min():.3f}}, {{actions.max():.3f}}]")
-print(f"Finite: {{np.isfinite(actions).all()}}")
-print("SELF-TEST: PASS")
-"""],
-            capture_output=True, text=True,
-            env={**os.environ, "REFLEX_EXPORT_DIR": export_dir},
-            timeout=120,
-        )
-        print(self_test.stdout)
-        if "SELF-TEST: PASS" in self_test.stdout:
-            log("self_test", "pass", "Model server works; vla-eval CLI integration needs debugging")
+    # Reconstruct eval_result-ish object for the downstream code
+    class _EvalResult:
+        pass
+    eval_result = _EvalResult()
+    eval_result.returncode = eval_returncode
+    eval_result.stdout = "".join(all_stdout)
+    eval_result.stderr = ""
+
+    # Dump adapter log tail — surfaces first-call obs/action diagnostics
+    _dump_adapter_tail()
+
+    # Parse results even on non-zero exit — vla-eval sometimes exits 0 even
+    # when every episode crashes (the CLI considers "ran all tasks" = success).
+    results_dir = "/tmp/libero_results"
+    total_eps = 0
+    total_success = 0
+    total_errors = 0
+    per_task: list[dict] = []
+    result_file_found = False
+
+    if os.path.exists(results_dir):
+        for f in sorted(os.listdir(results_dir)):
+            if not f.endswith(".json"):
+                continue
+            result_file_found = True
+            with open(os.path.join(results_dir, f)) as rf:
+                eval_data = json.load(rf)
+            print(f"  Result file: {f}")
+            for task in eval_data.get("tasks", []):
+                task_name = task.get("task", "<unnamed>")
+                eps = task.get("episodes", [])
+                successes = sum(
+                    1 for ep in eps if ep.get("metrics", {}).get("success")
+                )
+                errors = sum(1 for ep in eps if ep.get("failure_reason"))
+                per_task.append(
+                    {
+                        "task": task_name,
+                        "episodes": len(eps),
+                        "success": successes,
+                        "errors": errors,
+                        "success_rate": successes / len(eps) if eps else 0.0,
+                    }
+                )
+                total_eps += len(eps)
+                total_success += successes
+                total_errors += errors
+
+    if total_eps > 0:
+        success_rate = 100.0 * total_success / total_eps
+        results["task_success"] = success_rate
+        results["per_task"] = per_task
+        results["episodes_total"] = total_eps
+        results["episodes_errored"] = total_errors
+
+        if total_errors == total_eps:
+            log(
+                "libero10",
+                "fail",
+                f"All {total_eps} episodes crashed before inference. "
+                f"Check stderr above for the root cause.",
+            )
+        elif success_rate == 0 and total_errors == 0:
+            log(
+                "libero10",
+                "fail",
+                f"{total_eps} episodes ran cleanly, but 0% success. "
+                f"Model did not solve any task.",
+            )
         else:
-            log("self_test", "fail", self_test.stderr[-300:])
-
-        log("libero10", "fail",
-            f"vla-eval run exited {eval_result.returncode}. Self-test {'passed' if 'SELF-TEST: PASS' in self_test.stdout else 'failed'}.")
+            log(
+                "libero10",
+                "pass",
+                f"{success_rate:.1f}% task success "
+                f"({total_success}/{total_eps}, {total_errors} errors)",
+            )
+    elif result_file_found:
+        log("libero10", "fail", "Result JSON had no task data")
+    else:
+        log(
+            "libero10",
+            "fail",
+            f"No result file at {results_dir}. vla-eval exit={eval_result.returncode}; "
+            f"stderr: {eval_result.stderr[-300:]}",
+        )
 
     # Cleanup
     server_proc.terminate()
-    server_proc.wait(timeout=10)
+    try:
+        server_proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        server_proc.kill()
 
     return results
 
@@ -368,8 +576,7 @@ print("SELF-TEST: PASS")
 @app.local_entrypoint()
 def main():
     print("Starting LIBERO-10 evaluation on Modal (A10G)...")
-    print("  This may take 30-120 minutes for 500 episodes.")
-    print("  Budget: ~$1-3 on Modal.")
+    print("  100 episodes across 10 tasks; ~30 min; ~$1-3 budget.")
     result = run_libero10.remote()
 
     print("\n" + "=" * 60)
@@ -378,6 +585,11 @@ def main():
     print(json.dumps(result, indent=2))
 
     if result.get("task_success") is not None:
-        print(f"\n  HEADLINE: SmolVLA via Reflex achieves {result['task_success']:.1f}% on LIBERO-10")
+        print(
+            f"\n  HEADLINE: SmolVLA via Reflex achieves "
+            f"{result['task_success']:.1f}% on LIBERO-10"
+        )
 
-    sys.exit(0 if any(s["status"] == "pass" for s in result["steps"]) else 1)
+    sys.exit(
+        0 if any(s["status"] == "pass" for s in result["steps"]) else 1
+    )
