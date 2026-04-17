@@ -181,30 +181,36 @@ class TestExpertVLMKV:
         timestep = torch.tensor([0.5])
         position_ids = torch.arange(5).unsqueeze(0)
 
-        # Real vlm_kv
-        real_vlm_kv = torch.randn(1, 10, vlm_kv_dim)
-        with torch.no_grad():
-            out_real = stack(noisy_actions, timestep, position_ids, vlm_kv=real_vlm_kv)
+        # v0.5 schema: separate vlm_k (RoPE'd) and vlm_v, each [L, B, seq, kv_dim].
+        num_layers = 2
 
-        # Zero vlm_kv (explicit)
-        zero_vlm_kv = torch.zeros(1, 10, vlm_kv_dim)
+        real_k = torch.randn(num_layers, 1, 10, vlm_kv_dim)
+        real_v = torch.randn(num_layers, 1, 10, vlm_kv_dim)
         with torch.no_grad():
-            out_zero = stack(noisy_actions, timestep, position_ids, vlm_kv=zero_vlm_kv)
+            out_real = stack(noisy_actions, timestep, position_ids,
+                             vlm_k=real_k, vlm_v=real_v)
+
+        zero_k = torch.zeros(num_layers, 1, 10, vlm_kv_dim)
+        zero_v = torch.zeros(num_layers, 1, 10, vlm_kv_dim)
+        with torch.no_grad():
+            out_zero = stack(noisy_actions, timestep, position_ids,
+                             vlm_k=zero_k, vlm_v=zero_v)
 
         l2_diff = torch.norm(out_real - out_zero).item()
         assert l2_diff > 1e-3, (
-            f"Expert outputs should differ with real vs zero vlm_kv but L2={l2_diff}"
+            f"Expert outputs should differ with real vs zero vlm_k/v but L2={l2_diff}"
         )
 
     def test_expert_vlm_kv_none_fallback(self, tiny_expert_stack):
-        """When vlm_kv=None, expert falls back to zeros without error."""
+        """When vlm_k/vlm_v are None, expert falls back to zeros without error."""
         stack, meta = tiny_expert_stack
         noisy_actions = torch.randn(1, 5, meta["action_dim"])
         timestep = torch.tensor([0.5])
         position_ids = torch.arange(5).unsqueeze(0)
 
         with torch.no_grad():
-            out = stack(noisy_actions, timestep, position_ids, vlm_kv=None)
+            out = stack(noisy_actions, timestep, position_ids,
+                        vlm_k=None, vlm_v=None)
 
         assert out.shape == (1, 5, meta["action_dim"])
 
@@ -398,10 +404,15 @@ class TestVLMPrefixExporterUpdatesConfig:
         config_path = tmp_path / "reflex_config.json"
         config_path.write_text(json.dumps(initial_config))
 
-        # Simulate what export_vlm_prefix writes to config (lines 347-352)
+        # Simulate what export_vlm_prefix writes to config.
+        # vlm_hidden_size (960) is the VLM-internal dim. vlm_kv_dim (320) is
+        # the POST-projection dim that the expert's cross-attn expects —
+        # decoder_prefill.onnx bakes in the final-layer k_proj to output this
+        # shape directly.
         config = json.loads(config_path.read_text())
         config["vlm_image_size"] = [512, 512]
-        config["vlm_kv_dim"] = 960
+        config["vlm_hidden_size"] = 960
+        config["vlm_kv_dim"] = 320
         config["vlm_prefix_onnx"] = "vision_encoder.onnx"
         config["export_version"] = "0.3"
         config["decoder_prefill_onnx"] = "decoder_prefill.onnx"
@@ -410,7 +421,8 @@ class TestVLMPrefixExporterUpdatesConfig:
         # Verify config was updated
         updated_config = json.loads(config_path.read_text())
         assert updated_config["vlm_prefix_onnx"] == "vision_encoder.onnx"
-        assert updated_config["vlm_kv_dim"] == 960
+        assert updated_config["vlm_hidden_size"] == 960
+        assert updated_config["vlm_kv_dim"] == 320
         assert updated_config["vlm_image_size"] == [512, 512]
         assert updated_config["export_version"] == "0.3"
         assert updated_config["decoder_prefill_onnx"] == "decoder_prefill.onnx"

@@ -165,7 +165,11 @@ def export(
         from reflex.exporters.vlm_prefix_exporter import export_vlm_prefix
         vlm_start = time.perf_counter()
         try:
-            vlm_path = export_vlm_prefix(output_dir=output, opset=opset)
+            # Pass the loaded state_dict so the VLM exporter can overlay the
+            # fine-tuned vision/text weights instead of using BASE SmolVLM2.
+            vlm_path = export_vlm_prefix(
+                output_dir=output, opset=opset, state_dict=state_dict
+            )
             elapsed_vlm = time.perf_counter() - vlm_start
             console.print(f"[bold green]VLM export complete in {elapsed_vlm:.1f}s[/bold green]")
             # Show VLM output files
@@ -186,6 +190,84 @@ def export(
             console.print(
                 "[yellow]Server will use dummy VLM conditioning (v0.1 fallback).[/yellow]"
             )
+
+        # Save state_proj weights from checkpoint so the VLM orchestrator can
+        # project robot state through the REAL trained matrix instead of the
+        # random init we were falling back to (that was silently destroying
+        # state information in every prefix — the ONE bug hiding behind all
+        # the others, found by the PyTorch-vs-ONNX diff on 2026-04-17).
+        try:
+            import numpy as np
+            sp_w_keys = [k for k in state_dict if k.endswith("state_proj.weight")]
+            sp_b_keys = [k for k in state_dict if k.endswith("state_proj.bias")]
+            if sp_w_keys:
+                sp_w = state_dict[sp_w_keys[0]].detach().cpu().numpy().astype(
+                    np.float32
+                )
+                np.save(Path(output) / "state_proj_weight.npy", sp_w)
+                console.print(
+                    f"  state_proj weight: {sp_w.shape} → state_proj_weight.npy"
+                )
+            if sp_b_keys:
+                sp_b = state_dict[sp_b_keys[0]].detach().cpu().numpy().astype(
+                    np.float32
+                )
+                np.save(Path(output) / "state_proj_bias.npy", sp_b)
+                console.print(
+                    f"  state_proj bias: {sp_b.shape} → state_proj_bias.npy"
+                )
+            if not sp_w_keys:
+                console.print(
+                    "  [yellow]WARNING: no state_proj weight in checkpoint — "
+                    "orchestrator will fall back to random init and state "
+                    "conditioning will be garbage.[/yellow]"
+                )
+        except Exception as exc:
+            console.print(f"[yellow]state_proj save failed: {exc}[/yellow]")
+
+        # Copy LeRobot policy normalizer/unnormalizer from the HF repo into the
+        # export dir. Without these, the model receives un-normalized state and
+        # returns actions in normalized space — producing garbage trajectories
+        # in sim. Critical for LIBERO / real-robot eval success.
+        if "/" in model and not Path(model).exists():
+            try:
+                from huggingface_hub import hf_hub_download
+
+                console.print(
+                    "\n[dim]Copying policy preprocessor/postprocessor stats...[/dim]"
+                )
+                import shutil
+
+                stats_files = [
+                    "policy_preprocessor.json",
+                    "policy_postprocessor.json",
+                    "policy_preprocessor_step_5_normalizer_processor.safetensors",
+                    "policy_postprocessor_step_0_unnormalizer_processor.safetensors",
+                ]
+                copied = 0
+                for fname in stats_files:
+                    try:
+                        src = hf_hub_download(repo_id=model, filename=fname)
+                        shutil.copy(src, Path(output) / fname)
+                        copied += 1
+                    except Exception:
+                        # Not all SmolVLA checkpoints ship these (e.g. base)
+                        pass
+                if copied:
+                    console.print(
+                        f"  Copied {copied}/{len(stats_files)} normalizer files "
+                        f"→ {output}"
+                    )
+                else:
+                    console.print(
+                        "  [dim]No normalizer files found in checkpoint "
+                        "(base model or older format) — adapter will skip "
+                        "normalization.[/dim]"
+                    )
+            except Exception as exc:
+                console.print(
+                    f"[yellow]Normalizer copy skipped: {exc}[/yellow]"
+                )
 
     total_elapsed = time.perf_counter() - start
     console.print(f"\n[bold]Total export: {total_elapsed:.1f}s[/bold]")

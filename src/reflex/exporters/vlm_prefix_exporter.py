@@ -213,10 +213,67 @@ def patch_onnx_type_mismatches(onnx_path: str | Path) -> int:
     return fixed_count
 
 
+def _apply_checkpoint_vlm_weights(base_model, checkpoint_state_dict):
+    """Overwrite the base VLM's weights with fine-tuned ones from the checkpoint."""
+    prefixes = [
+        "model.vlm_with_expert.vlm.",
+        "vlm_with_expert.vlm.",
+        "model.vlm.",
+    ]
+    matched_prefix = None
+    for p in prefixes:
+        if any(k.startswith(p) for k in checkpoint_state_dict.keys()):
+            matched_prefix = p
+            break
+    if matched_prefix is None:
+        # Print top-level prefixes so we can see what's actually in the ckpt.
+        top = set()
+        for k in checkpoint_state_dict:
+            parts = k.split(".")
+            if len(parts) >= 3:
+                top.add(".".join(parts[:3]))
+        print(
+            f"[vlm-weights] No matching VLM prefix found. "
+            f"Top-3 prefixes sample: {sorted(list(top))[:5]}",
+            flush=True,
+        )
+        return 0
+
+    rebased = {
+        k[len(matched_prefix):]: v
+        for k, v in checkpoint_state_dict.items()
+        if k.startswith(matched_prefix)
+    }
+    print(
+        f"[vlm-weights] matched_prefix={matched_prefix!r}, rebased {len(rebased)} keys",
+        flush=True,
+    )
+    print(
+        f"[vlm-weights] sample rebased keys: {sorted(list(rebased.keys()))[:5]}",
+        flush=True,
+    )
+
+    try:
+        missing, unexpected = base_model.load_state_dict(rebased, strict=False)
+        print(
+            f"[vlm-weights] load: {len(missing)} missing, {len(unexpected)} unexpected",
+            flush=True,
+        )
+        if missing:
+            print(f"[vlm-weights] first 5 missing: {missing[:5]}", flush=True)
+        if unexpected:
+            print(f"[vlm-weights] first 5 unexpected: {unexpected[:5]}", flush=True)
+        return len(rebased)
+    except Exception as e:
+        print(f"[vlm-weights] FAILED: {e}", flush=True)
+        return 0
+
+
 def export_vlm_prefix(
     checkpoint_path_or_id: str = DEFAULT_VLM_MODEL_NAME,
     output_dir: str | Path = ".",
     opset: int = 19,
+    state_dict: dict | None = None,
 ) -> Path:
     """Export VLM vision encoder (SigLIP + connector) as ONNX.
 
@@ -239,23 +296,66 @@ def export_vlm_prefix(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Load the base VLM
-    logger.info("Loading VLM: %s", checkpoint_path_or_id)
-    model = AutoModel.from_pretrained(
-        checkpoint_path_or_id, trust_remote_code=True
-    )
+    # 1. Load the base VLM using AutoModelForImageTextToText — matches the
+    # wrapper SmolVLA uses internally (see smolvlm_with_expert.py), which
+    # means the checkpoint's VLM state_dict keys line up 1:1 after prefix
+    # strip. Using plain AutoModel gave a different module tree
+    # (connector.X vs model.connector.X) and the fine-tuned weights
+    # silently failed to load (488 missing, 345 unexpected).
+    from transformers import AutoModelForImageTextToText
+
+    print(f"Loading VLM: {checkpoint_path_or_id}", flush=True)
+    try:
+        model = AutoModelForImageTextToText.from_pretrained(
+            checkpoint_path_or_id, trust_remote_code=True
+        )
+    except Exception as e:
+        print(
+            f"AutoModelForImageTextToText failed ({e}); falling back to AutoModel",
+            flush=True,
+        )
+        model = AutoModel.from_pretrained(
+            checkpoint_path_or_id, trust_remote_code=True
+        )
     model.eval()
+    if state_dict is not None:
+        _apply_checkpoint_vlm_weights(model, state_dict)
+
+    # The AutoModelForImageTextToText wrapper has `self.model = SmolVLMModel(...)`
+    # whose sub-modules are the actual vision/connector/text_model. Drill down
+    # so the rest of this function can keep using ``model.vision_model`` /
+    # ``model.connector`` / ``model.text_model`` without further changes.
+    if hasattr(model, "model") and hasattr(model.model, "connector"):
+        model = model.model
+        print("[vlm-weights] unwrapped ForConditionalGeneration -> inner model", flush=True)
+
+    # Older SmolVLM checkpoints use `vision_tower` as the attr name,
+    # newer ones use `vision_model`. Normalise so wrapper code works.
+    if not hasattr(model, "vision_model") and hasattr(model, "vision_tower"):
+        model.vision_model = model.vision_tower
+        print(
+            "[vlm-weights] aliased vision_tower -> vision_model for wrapper compat",
+            flush=True,
+        )
 
     # Extract architecture constants from the loaded model
     vision_config = model.config.vision_config
     text_config = model.config.text_config
     image_size = vision_config.image_size
-    vlm_kv_dim = text_config.hidden_size  # 960
+    vlm_hidden_size = text_config.hidden_size  # 960 — VLM internal dim
+    # The expert's cross-attn k_proj expects num_kv_heads * head_dim, NOT raw
+    # hidden_size. SmolLM2: 5 * 64 = 320. decoder_prefill.onnx projects VLM
+    # hidden to this dim via the final layer's k_proj before output.
+    vlm_kv_dim = text_config.num_key_value_heads * getattr(
+        text_config, "head_dim",
+        text_config.hidden_size // text_config.num_attention_heads,
+    )
 
     logger.info(
-        "VLM config: image_size=%d, vision_hidden=%d, text_hidden(vlm_kv_dim)=%d",
+        "VLM config: image_size=%d, vision_hidden=%d, text_hidden=%d, vlm_kv_dim=%d",
         image_size,
         vision_config.hidden_size,
+        vlm_hidden_size,
         vlm_kv_dim,
     )
 
@@ -345,10 +445,14 @@ def export_vlm_prefix(
         config = json.loads(config_path.read_text())
 
     config["vlm_image_size"] = [image_size, image_size]
-    config["vlm_kv_dim"] = vlm_kv_dim
+    config["vlm_hidden_size"] = vlm_hidden_size  # 960 — VLM-internal dim (for state encoder)
+    config["vlm_kv_dim"] = vlm_kv_dim            # 320 — expert cross-attn input dim
+    # L dim in the per-layer tensor; SmolVLA truncates the SmolVLM2 decoder
+    # to 16 of 32 layers at export time, and the expert has a matching count.
+    config["vlm_num_layers"] = SMOLVLA_NUM_DECODER_LAYERS
     config["vlm_prefix_onnx"] = "vision_encoder.onnx"
     config["vlm_model_id"] = checkpoint_path_or_id
-    config["export_version"] = "0.3"
+    config["export_version"] = "0.5"  # split vlm_k/vlm_v with RoPE on k
 
     config_path.write_text(json.dumps(config, indent=2))
     logger.info("Updated config: %s", config_path)
@@ -501,16 +605,33 @@ DECODER_ORT_MAX_DIFF_THRESHOLD = 5e-4
 DEFAULT_PREFIX_SEQ_LEN = 75
 
 
+def _rotate_half(x: torch.Tensor) -> torch.Tensor:
+    """Standard HF rotary helper — rotates half the last dim."""
+    h = x.shape[-1] // 2
+    return torch.cat([-x[..., h:], x[..., :h]], dim=-1)
+
+
 class DecoderPrefillForONNX(nn.Module):
-    """Wraps a truncated SmolLM2 decoder for single-pass prefill ONNX export.
+    """Wraps SmolLM2 decoder for per-layer (k, v) prefill with RoPE on k.
 
-    Takes pre-assembled prefix embeddings (image + text + state) and runs
-    them through the 16-layer decoder to produce contextualised hidden states.
-    No autoregressive generation — just one forward pass.
+    Exports EXACTLY what the real SmolVLA cross-attention consumes (see
+    ``smolvlm_with_expert.py::forward_cross_attn_layer``):
 
-    Input:  ``inputs_embeds``  — ``[B, seq, 960]`` float32
-    Input:  ``attention_mask`` — ``[B, seq]`` int64
-    Output: ``last_hidden_state`` — ``[B, seq, 960]`` float32
+        for each layer i:
+            h_norm = layer.input_layernorm(hidden_states[i])
+            k_i = layer.self_attn.k_proj(h_norm)        ← reshape → per-head
+            k_i = apply_rope(k_i, position_ids)          ← CRITICAL step
+            v_i = layer.self_attn.v_proj(h_norm)         ← separate projection
+
+    Earlier versions skipped RoPE and used a single tensor for both k and v
+    sources. Both are meaningful distribution shifts from training: un-roped
+    keys make cross-attn similarity scores incoherent, and mixing k/v sources
+    has the expert's v_proj seeing k-distribution inputs.
+
+    Input:  inputs_embeds   [B, seq, hidden]          float32
+    Input:  attention_mask  [B, seq]                  int64
+    Output: vlm_k_per_layer [num_layers, B, seq, kv_dim] float32  (RoPE applied)
+    Output: vlm_v_per_layer [num_layers, B, seq, kv_dim] float32
     """
 
     def __init__(self, text_model: nn.Module):
@@ -519,23 +640,59 @@ class DecoderPrefillForONNX(nn.Module):
 
     def forward(
         self, inputs_embeds: torch.Tensor, attention_mask: torch.Tensor
-    ) -> torch.Tensor:
-        """Run decoder prefill.
-
-        Args:
-            inputs_embeds: ``[B, seq, 960]`` — assembled prefix embeddings.
-            attention_mask: ``[B, seq]`` — standard HF attention mask
-                (1 = attend, 0 = ignore).
-
-        Returns:
-            last_hidden_state: ``[B, seq, 960]`` — contextualised hidden states.
-        """
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         outputs = self.text_model(
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
-            output_hidden_states=False,
+            output_hidden_states=True,
         )
-        return outputs.last_hidden_state
+
+        # Position IDs from attention_mask: cumsum - 1 over attend positions.
+        # This matches what HF's LlamaModel does internally when you don't
+        # provide position_ids — required for RoPE phase alignment with the
+        # values SmolVLA trained with.
+        position_ids = attention_mask.long().cumsum(dim=-1) - 1
+        position_ids = position_ids.clamp(min=0)
+
+        # Get RoPE cos/sin. Transformers 4.41+ keeps rotary_emb at the model
+        # level (model.rotary_emb); older versions had it per-layer
+        # (layers[0].self_attn.rotary_emb). Try both for compat.
+        rotary_emb = getattr(self.text_model, "rotary_emb", None)
+        if rotary_emb is None:
+            rotary_emb = self.text_model.layers[0].self_attn.rotary_emb
+        cos, sin = rotary_emb(inputs_embeds, position_ids)
+        # cos/sin shape: [B, seq, head_dim]. Unsqueeze head dim for broadcast.
+        cos = cos.unsqueeze(1)  # [B, 1, seq, head_dim]
+        sin = sin.unsqueeze(1)
+
+        per_layer_ks: list[torch.Tensor] = []
+        per_layer_vs: list[torch.Tensor] = []
+        for i, layer in enumerate(self.text_model.layers):
+            h_in = outputs.hidden_states[i]  # [B, seq, hidden]
+            h_norm = layer.input_layernorm(h_in)
+            k_flat = layer.self_attn.k_proj(h_norm)  # [B, seq, nkv*hd]
+            v_flat = layer.self_attn.v_proj(h_norm)  # [B, seq, nkv*hd]
+
+            b, s, _ = k_flat.shape
+            nkv = layer.self_attn.config.num_key_value_heads
+            hd = layer.self_attn.head_dim
+
+            # Reshape to [B, nkv, seq, hd] to apply RoPE (HF layout).
+            k_heads = k_flat.view(b, s, nkv, hd).transpose(1, 2)
+
+            # Apply RoPE to k only (values are NOT rotated in HF attention).
+            k_roped = (k_heads * cos) + (_rotate_half(k_heads) * sin)
+
+            # Flatten back to [B, seq, nkv*hd] — matches what the expert's
+            # k_proj expects as input dim.
+            k_out = k_roped.transpose(1, 2).contiguous().view(b, s, nkv * hd)
+
+            per_layer_ks.append(k_out)
+            per_layer_vs.append(v_flat)
+
+        vlm_k = torch.stack(per_layer_ks, dim=0)  # [L, B, seq, kv_dim]
+        vlm_v = torch.stack(per_layer_vs, dim=0)  # [L, B, seq, kv_dim]
+        return vlm_k, vlm_v
 
 
 def export_decoder_prefill(
@@ -599,27 +756,42 @@ def export_decoder_prefill(
         )
         num_layers = total_layers
 
-    # 4. Build ONNX wrapper
+    # 4. Build ONNX wrapper — outputs per-layer (k with RoPE, v) tensors.
+    src_k_proj = text_model.layers[-1].self_attn.k_proj
+    kv_out_dim = src_k_proj.out_features
+
     wrapper = DecoderPrefillForONNX(text_model)
     wrapper.eval()
 
     total_params = sum(p.numel() for p in wrapper.parameters())
     logger.info(
-        "DecoderPrefillForONNX: %d layers, %.1fM params",
+        "DecoderPrefillForONNX: %d layers, %.1fM params, "
+        "per-layer kv_dim=%d → outputs vlm_k [%d, B, seq, %d] and vlm_v [%d, B, seq, %d]",
         num_layers,
         total_params / 1e6,
+        kv_out_dim,
+        num_layers,
+        kv_out_dim,
+        num_layers,
+        kv_out_dim,
     )
 
-    # 5. Sanity check: wrapper produces output of correct shape
+    # 5. Sanity check: wrapper produces outputs of correct shape
     dummy_embeds = torch.randn(1, prefix_seq_len, hidden_size)
     dummy_mask = torch.ones(1, prefix_seq_len, dtype=torch.long)
 
     with torch.no_grad():
-        torch_out = wrapper(dummy_embeds, dummy_mask)
-    assert torch_out.shape == (1, prefix_seq_len, hidden_size), (
-        f"Unexpected output shape: {torch_out.shape}"
+        torch_k, torch_v = wrapper(dummy_embeds, dummy_mask)
+    expected_shape = (num_layers, 1, prefix_seq_len, kv_out_dim)
+    assert torch_k.shape == expected_shape, (
+        f"Unexpected k shape: {torch_k.shape} (expected {expected_shape})"
     )
-    logger.info("Sanity check passed: output shape %s", torch_out.shape)
+    assert torch_v.shape == expected_shape, (
+        f"Unexpected v shape: {torch_v.shape} (expected {expected_shape})"
+    )
+    logger.info(
+        "Sanity check passed: k shape %s, v shape %s", torch_k.shape, torch_v.shape
+    )
 
     # 6. Export to ONNX
     onnx_path = output_dir / "decoder_prefill.onnx"
@@ -631,11 +803,15 @@ def export_decoder_prefill(
             (dummy_embeds, dummy_mask),
             str(onnx_path),
             input_names=["inputs_embeds", "attention_mask"],
-            output_names=["last_hidden_state"],
+            # Two outputs: RoPE-applied keys per layer, raw values per layer.
+            # The orchestrator reads both and feeds them to expert's vlm_k /
+            # vlm_v inputs separately.
+            output_names=["vlm_k", "vlm_v"],
             dynamic_axes={
                 "inputs_embeds": {0: "batch", 1: "seq"},
                 "attention_mask": {0: "batch", 1: "seq"},
-                "last_hidden_state": {0: "batch", 1: "seq"},
+                "vlm_k": {1: "batch", 2: "seq"},
+                "vlm_v": {1: "batch", 2: "seq"},
             },
             opset_version=opset,
             do_constant_folding=False,
@@ -651,29 +827,28 @@ def export_decoder_prefill(
 
         sess = ort.InferenceSession(str(onnx_path))
         with torch.no_grad():
-            torch_ref = wrapper(dummy_embeds, dummy_mask).numpy()
-        ort_out = sess.run(
-            None,
+            torch_k, torch_v = wrapper(dummy_embeds, dummy_mask)
+        ort_k, ort_v = sess.run(
+            ["vlm_k", "vlm_v"],
             {
                 "inputs_embeds": dummy_embeds.numpy(),
                 "attention_mask": dummy_mask.numpy(),
             },
-        )[0]
+        )
 
-        max_diff = float(np.abs(torch_ref - ort_out).max())
-        mean_diff = float(np.abs(torch_ref - ort_out).mean())
+        k_max = float(np.abs(torch_k.numpy() - ort_k).max())
+        v_max = float(np.abs(torch_v.numpy() - ort_v).max())
+        max_diff = max(k_max, v_max)
         passed = max_diff < DECODER_ORT_MAX_DIFF_THRESHOLD
 
         logger.info(
-            "ONNX validation: max_diff=%.2e, mean_diff=%.2e (%s)",
-            max_diff,
-            mean_diff,
-            "PASS" if passed else "FAIL",
+            "ONNX validation: k_max=%.2e, v_max=%.2e (%s)",
+            k_max, v_max, "PASS" if passed else "FAIL",
         )
         if not passed:
             logger.warning(
                 "Decoder ONNX numerical mismatch: max_diff=%.2e exceeds %.1e "
-                "threshold (16 transformer layers accumulate fp32 drift)",
+                "threshold (16 transformer layers + RoPE accumulate fp32 drift)",
                 max_diff,
                 DECODER_ORT_MAX_DIFF_THRESHOLD,
             )

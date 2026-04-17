@@ -32,10 +32,19 @@ logger = logging.getLogger(__name__)
 
 
 def _sinusoidal_pos_embedding(t, dim, min_p=4e-3, max_p=4.0):
-    exp = torch.linspace(0, 1, dim // 2, device=t.device, dtype=t.dtype)
-    freq = torch.exp(exp * (math.log(min_p) - math.log(max_p))) / min_p
-    angle = t.unsqueeze(-1) * freq.unsqueeze(0)
-    return torch.cat([angle.cos(), angle.sin()], dim=-1)
+    """Matches lerobot's ``create_sinusoidal_pos_embedding`` exactly.
+
+    Earlier version was missing the ``2π`` scaling factor AND used [cos, sin]
+    order instead of [sin, cos]. Both wrong. Time signal to the expert was
+    therefore completely mis-phased, making every denoising step operate at
+    the wrong "time," which cascaded into flow-matching catastrophic drift.
+    """
+    assert dim % 2 == 0
+    fraction = torch.linspace(0.0, 1.0, dim // 2, device=t.device, dtype=t.dtype)
+    period = min_p * (max_p / min_p) ** fraction
+    scaling = (1.0 / period) * 2 * math.pi  # [dim/2]
+    angle = t.unsqueeze(-1) * scaling.unsqueeze(0)  # [B, dim/2]
+    return torch.cat([angle.sin(), angle.cos()], dim=-1)
 
 
 class _DecomposedRoPE(nn.Module):
@@ -56,7 +65,7 @@ class _DecomposedRoPE(nn.Module):
 class ExpertGQALayer(nn.Module):
     """Single expert transformer layer with decomposed ops for ONNX export."""
 
-    def __init__(self, hidden, nq, nkv, hd, inter, kv_in=None):
+    def __init__(self, hidden, nq, nkv, hd, inter, kv_in=None, rope_theta=100000.0):
         super().__init__()
         self.nq, self.nkv, self.hd = nq, nkv, hd
         self.kv_groups = nq // nkv
@@ -69,23 +78,44 @@ class ExpertGQALayer(nn.Module):
         self.gate_proj = nn.Linear(hidden, inter, bias=False)
         self.up_proj = nn.Linear(hidden, inter, bias=False)
         self.down_proj = nn.Linear(inter, hidden, bias=False)
-        self.rope = _DecomposedRoPE(hd)
+        # SmolLM2 / SmolVLM2 uses rope_theta=100000 (not the Llama default 10000).
+        # Wrong base → wrong frequency per position → corrupts attention.
+        self.rope = _DecomposedRoPE(hd, base=rope_theta)
 
-    def forward(self, x, pos_ids, cross_kv=None):
+    def forward(self, x, pos_ids, cross_k=None, cross_v=None, kv_mask=None):
+        """Run one transformer layer.
+
+        ``kv_mask`` is an optional ``[B, kv_len]`` boolean tensor — True where
+        the KV token is valid, False where it's padding. For cross-attention
+        we set the attention logit to ``-inf`` at padded positions so they
+        contribute zero probability after softmax. Matches real SmolVLA's
+        ``eager_attention_forward`` masked-attention semantics.
+        """
         b, s, _ = x.shape
         res = x
         x = self.input_layernorm(x)
         q = self.q_proj(x).view(b, s, self.nq, self.hd).transpose(1, 2)
-        kv_src = cross_kv if cross_kv is not None else x
-        kv_len = kv_src.shape[1]
-        k = self.k_proj(kv_src).view(b, kv_len, self.nkv, self.hd).transpose(1, 2)
-        v = self.v_proj(kv_src).view(b, kv_len, self.nkv, self.hd).transpose(1, 2)
+
+        is_cross = cross_k is not None
+        k_src = cross_k if is_cross else x
+        v_src = cross_v if is_cross else x
+        kv_len = k_src.shape[1]
+
+        k = self.k_proj(k_src).view(b, kv_len, self.nkv, self.hd).transpose(1, 2)
+        v = self.v_proj(v_src).view(b, kv_len, self.nkv, self.hd).transpose(1, 2)
         q = self.rope.apply(q, pos_ids)
-        if cross_kv is None:
+        if not is_cross:
             k = self.rope.apply(k, pos_ids)
         k = k.unsqueeze(2).expand(-1, -1, self.kv_groups, -1, -1).reshape(b, self.nq, kv_len, self.hd)
         v = v.unsqueeze(2).expand(-1, -1, self.kv_groups, -1, -1).reshape(b, self.nq, kv_len, self.hd)
-        attn = F.softmax(torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.hd), dim=-1)
+
+        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.hd)  # [B, nq, s, kv_len]
+        if is_cross and kv_mask is not None:
+            # Mask padded positions: set score to large negative before softmax.
+            # kv_mask broadcast: [B, kv_len] -> [B, 1, 1, kv_len]
+            mask = kv_mask[:, None, None, :]
+            scores = scores.masked_fill(~mask, -1e9)
+        attn = F.softmax(scores, dim=-1)
         x = res + self.o_proj(torch.matmul(attn, v).transpose(1, 2).contiguous().view(b, s, -1))
         res = x
         x = self.post_attention_layernorm(x)
@@ -119,31 +149,67 @@ class ExpertStack(nn.Module):
 
         self.final_norm = DecomposedRMSNorm(final_norm_weight)
 
-    def forward(self, noisy_actions, timestep, position_ids, vlm_kv: torch.Tensor | None = None):
+    def forward(
+        self,
+        noisy_actions,
+        timestep,
+        position_ids,
+        vlm_k: torch.Tensor | None = None,
+        vlm_v: torch.Tensor | None = None,
+        prefix_offset: torch.Tensor | None = None,
+        kv_mask: torch.Tensor | None = None,
+    ):
+        """Run one denoising step.
+
+        ``vlm_k`` and ``vlm_v`` are PER-LAYER tensors of shape
+        ``[L, B, seq, kv_dim]`` where ``L`` equals the number of expert
+        layers. For each cross-attn layer ``i``:
+            - ``vlm_k[i]`` = VLM's layer-i k_proj output, RoPE-applied.
+            - ``vlm_v[i]`` = VLM's layer-i v_proj output, no RoPE.
+
+        Expert's k_proj/v_proj further project these into expert-head space.
+        Matches real SmolVLA (smolvlm_with_expert.py::forward_cross_attn_layer).
+        """
         b, c, _ = noisy_actions.shape
         act = self.action_in_proj(noisy_actions)
         t_emb = _sinusoidal_pos_embedding(timestep, self.expert_hidden)
         t_emb = t_emb.unsqueeze(1).expand(-1, c, -1)
         x = self.action_time_mlp_out(F.silu(self.action_time_mlp_in(torch.cat([act, t_emb], dim=-1))))
 
-        # Use provided VLM KV or fall back to zeros for backward compat
-        if vlm_kv is None:
-            cross_kv = torch.zeros(b, 1, self.vlm_kv_dim, device=x.device, dtype=x.dtype) if (self.cross_indices and self.vlm_kv_dim > 0) else None
-        else:
-            cross_kv = vlm_kv
+        # Self-attention layers use position_ids OFFSET by the prefix length —
+        # this matches denoise_step in real SmolVLA which does
+        # `prefix_offsets + cumsum(suffix_pad_masks) - 1`. Cross-attention
+        # layers keep position_ids [0..chunk-1] (matching the renormalisation
+        # real code does in forward_cross_attn_layer).
+        self_pos_ids = position_ids
+        if prefix_offset is not None:
+            self_pos_ids = position_ids + prefix_offset
 
         for i, layer in enumerate(self.layers):
             if i in self.cross_indices:
-                x = layer(x, position_ids, cross_kv=cross_kv)
+                if vlm_k is None or vlm_v is None:
+                    layer_k = torch.zeros(
+                        b, 1, self.vlm_kv_dim, device=x.device, dtype=x.dtype
+                    )
+                    layer_v = layer_k
+                else:
+                    layer_k = vlm_k[i]
+                    layer_v = vlm_v[i]
+                x = layer(x, position_ids, cross_k=layer_k, cross_v=layer_v, kv_mask=kv_mask)
             else:
-                x = layer(x, position_ids)
+                x = layer(x, self_pos_ids)
 
         x = self.final_norm(x)
         return self.action_out_proj(x)
 
 
 def build_expert_stack(state_dict: dict[str, torch.Tensor], head_dim: int) -> tuple[ExpertStack, dict]:
-    """Build the full expert stack from SmolVLA state_dict."""
+    """Build the full expert stack from SmolVLA state_dict.
+
+    Note: ``head_dim`` is the **VLM's** head_dim (e.g. 64 for SmolLM2). The
+    expert's head_dim is DIFFERENT (expert_hidden / num_heads, typically 48 for
+    SmolVLA's 0.75× width multiplier). We recover it from the q_proj shape.
+    """
     expert_hidden = state_dict["model.action_in_proj.weight"].shape[0]
     action_dim = state_dict["model.action_in_proj.weight"].shape[1]
 
@@ -161,9 +227,35 @@ def build_expert_stack(state_dict: dict[str, torch.Tensor], head_dim: int) -> tu
     q_shape = state_dict[f"{base_prefix}layers.0.self_attn.q_proj.weight"].shape
     k_shape = state_dict[f"{base_prefix}layers.0.self_attn.k_proj.weight"].shape
     gate_shape = state_dict[f"{base_prefix}layers.0.mlp.gate_proj.weight"].shape
-    nq = q_shape[0] // head_dim
-    nkv = k_shape[0] // head_dim
+
+    # The expert inherits num_attention_heads / num_key_value_heads from the
+    # VLM text_config but has a SMALLER hidden_size — so its head_dim is
+    # expert_hidden / num_heads, NOT the VLM's head_dim (which is what's
+    # passed in as the arg). For SmolVLA: VLM head_dim=64, expert head_dim=48.
+    # Using the wrong head_dim breaks the entire attention computation
+    # (wrong head count, wrong q/k/v reshapes, wrong RoPE dim).
+    # Recover num_heads and num_kv_heads via ratio with the known VLM head_dim:
+    # VLM has nq_vlm = vlm_hidden / vlm_head_dim heads, expert shares num_heads.
+    nq_vlm_heads = None
+    try:
+        from transformers import AutoConfig
+        vlm_cfg = AutoConfig.from_pretrained("HuggingFaceTB/SmolVLM2-500M-Video-Instruct")
+        nq = int(vlm_cfg.text_config.num_attention_heads)
+        nkv = int(vlm_cfg.text_config.num_key_value_heads)
+    except Exception:
+        # Fallback: recover from q_proj shape assuming VLM's head_dim
+        nq = q_shape[0] // head_dim
+        nkv = k_shape[0] // head_dim
+
+    expert_head_dim = q_shape[0] // nq  # e.g. 720 // 15 = 48
     inter = gate_shape[0]
+    print(
+        f"[expert-stack] expert_hidden={expert_hidden}, num_q_heads={nq}, "
+        f"num_kv_heads={nkv}, expert_head_dim={expert_head_dim} "
+        f"(vlm head_dim={head_dim}), intermediate={inter}",
+        flush=True,
+    )
+    head_dim = expert_head_dim
 
     layers = []
     cross_indices = []
@@ -283,18 +375,30 @@ def export_smolvla(
     dummy_time = torch.tensor([0.5])
     dummy_pos = torch.arange(chunk_size).unsqueeze(0)
     vlm_kv_dim = expert_meta["vlm_kv_dim"]
-    dummy_vlm_kv = torch.zeros(1, 1, vlm_kv_dim)
+    # vlm_k and vlm_v per-layer: [L, B, seq, kv_dim] where L = num expert layers.
+    # vlm_k has RoPE applied, vlm_v doesn't — matches smolvlm_with_expert forward.
+    num_layers = expert_meta["num_layers"]
+    dummy_vlm_k = torch.zeros(num_layers, 1, 1, vlm_kv_dim)
+    dummy_vlm_v = torch.zeros(num_layers, 1, 1, vlm_kv_dim)
+    dummy_prefix_offset = torch.tensor([[241]], dtype=torch.int64)  # [B, 1]
+    dummy_kv_mask = torch.ones(1, 1, dtype=torch.bool)  # [B, seq] — all valid
 
     expert_onnx = output_dir / "expert_stack.onnx"
     export_module_to_onnx(
         expert_stack,
-        (dummy_actions, dummy_time, dummy_pos, dummy_vlm_kv),
+        (dummy_actions, dummy_time, dummy_pos, dummy_vlm_k, dummy_vlm_v,
+         dummy_prefix_offset, dummy_kv_mask),
         expert_onnx,
-        input_names=["noisy_actions", "timestep", "position_ids", "vlm_kv"],
+        input_names=["noisy_actions", "timestep", "position_ids", "vlm_k", "vlm_v",
+                     "prefix_offset", "kv_mask"],
         output_names=["velocity"],
         dynamic_axes={
             "noisy_actions": {0: "batch"}, "timestep": {0: "batch"},
-            "position_ids": {0: "batch"}, "vlm_kv": {0: "batch", 1: "seq"},
+            "position_ids": {0: "batch"},
+            "vlm_k": {1: "batch", 2: "seq"},
+            "vlm_v": {1: "batch", 2: "seq"},
+            "prefix_offset": {0: "batch"},
+            "kv_mask": {0: "batch", 1: "seq"},
         },
         opset_version=config.opset,
     )
@@ -313,9 +417,14 @@ def export_smolvla(
                 "noisy_actions": dummy_actions.numpy(),
                 "timestep": dummy_time.numpy(),
                 "position_ids": dummy_pos.numpy().astype(np.int64),
-                "vlm_kv": dummy_vlm_kv.numpy(),
+                "vlm_k": dummy_vlm_k.numpy(),
+                "vlm_v": dummy_vlm_v.numpy(),
+                "prefix_offset": dummy_prefix_offset.numpy(),
             })[0]
-            torch_out = expert_stack(dummy_actions, dummy_time, dummy_pos, dummy_vlm_kv).detach().numpy()
+            torch_out = expert_stack(
+                dummy_actions, dummy_time, dummy_pos,
+                dummy_vlm_k, dummy_vlm_v, dummy_prefix_offset
+            ).detach().numpy()
             max_diff = float(np.abs(ort_out - torch_out).max())
             result["metadata"]["onnx_validation"] = {"max_diff": max_diff, "passed": max_diff < 0.01}
             logger.info("ONNX validation: max_diff=%.2e (%s)", max_diff, "PASS" if max_diff < 0.01 else "FAIL")

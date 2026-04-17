@@ -361,21 +361,55 @@ class ReflexServer:
         self,
         noisy_actions: np.ndarray,
         position_ids: np.ndarray,
-        vlm_kv: np.ndarray | None = None,
+        vlm_kv: tuple[np.ndarray, np.ndarray] | np.ndarray | None = None,
     ) -> tuple[np.ndarray, int]:
-        """Run the full denoising loop (fixed or adaptive). Returns (actions, steps_used)."""
+        """Run the full denoising loop (fixed or adaptive).
+
+        ``vlm_kv`` can be:
+            - (k, v) tuple of shape ([L, B, seq, kv], [L, B, seq, kv]) — v0.5+ (RoPE + split k/v)
+            - single ndarray [L, B, seq, kv] — v0.4 (per-layer, no split, no RoPE)
+            - single ndarray [B, seq, kv] — v0.3 (collapsed shared tensor)
+            - None — use zeros of the right shape
+
+        Returns (denoised_actions, steps_used).
+        """
         dt = -1.0 / self.num_denoising_steps
         prev_velocity_norm: float | None = None
         converged_at: int | None = None
 
-        # Build the vlm_kv input for the expert session (if supported)
-        expert_has_vlm_kv = "vlm_kv" in self._expert_input_names
-        if expert_has_vlm_kv and vlm_kv is None:
-            # Expert expects vlm_kv but we have none — pass zeros of the right shape
-            vlm_kv_dim = self.config.get("vlm_kv_dim", 960)
+        # Detect expert schema by ONNX input names.
+        expert_has_split_kv = (
+            "vlm_k" in self._expert_input_names
+            and "vlm_v" in self._expert_input_names
+        )
+        expert_has_single_kv = "vlm_kv" in self._expert_input_names
+
+        # Normalize vlm_kv to (k, v) if tuple, else leave as scalar array.
+        vlm_k: np.ndarray | None = None
+        vlm_v: np.ndarray | None = None
+        vlm_kv_single: np.ndarray | None = None
+        if isinstance(vlm_kv, tuple) and len(vlm_kv) == 2:
+            vlm_k, vlm_v = vlm_kv
+        elif vlm_kv is not None:
+            vlm_kv_single = vlm_kv
+
+        # Zero fallback when expert expects kv inputs but caller provided none.
+        if (expert_has_split_kv or expert_has_single_kv) and (
+            vlm_k is None and vlm_v is None and vlm_kv_single is None
+        ):
+            vlm_kv_dim = self.config.get("vlm_kv_dim", 320)
             prefix_seq_len = self.config.get("vlm_prefix_seq_len", 50)
             batch = noisy_actions.shape[0]
-            vlm_kv = np.zeros((batch, prefix_seq_len, vlm_kv_dim), dtype=np.float32)
+            num_layers = self.config.get("vlm_num_layers", 16)
+            zeros_4d = np.zeros(
+                (num_layers, batch, prefix_seq_len, vlm_kv_dim), dtype=np.float32
+            )
+            if expert_has_split_kv:
+                vlm_k = zeros_4d
+                vlm_v = zeros_4d.copy()
+            else:
+                # v0.3/v0.4 single-tensor fallback
+                vlm_kv_single = zeros_4d
 
         for step in range(self.num_denoising_steps):
             t = 1.0 + step * dt
@@ -386,8 +420,21 @@ class ReflexServer:
                 "timestep": timestep,
                 "position_ids": position_ids,
             }
-            if expert_has_vlm_kv and vlm_kv is not None:
-                feed_dict["vlm_kv"] = vlm_kv
+            if expert_has_split_kv and vlm_k is not None and vlm_v is not None:
+                feed_dict["vlm_k"] = vlm_k
+                feed_dict["vlm_v"] = vlm_v
+                # prefix_offset: self-attn expert layers offset their q RoPE by
+                # the prefix length (real denoise_step semantics). Feed the
+                # VLM prefix sequence length from vlm_k[0].shape[1] (the seq
+                # axis of per-layer k).
+                if "prefix_offset" in self._expert_input_names:
+                    prefix_len = int(vlm_k.shape[2])  # [L, B, seq, kv]
+                    batch = noisy_actions.shape[0]
+                    feed_dict["prefix_offset"] = np.full(
+                        (batch, 1), prefix_len, dtype=np.int64
+                    )
+            elif expert_has_single_kv and vlm_kv_single is not None:
+                feed_dict["vlm_kv"] = vlm_kv_single
 
             velocity = self._ort_session.run(None, feed_dict)[0]
 
@@ -410,9 +457,10 @@ class ReflexServer:
 
     def predict(
         self,
-        image: np.ndarray | None = None,
+        image: np.ndarray | list[np.ndarray] | None = None,
         instruction: str = "",
         state: list[float] | np.ndarray | None = None,
+        noise: np.ndarray | None = None,
     ) -> dict[str, Any]:
         """Run inference: image + instruction + state → action chunk.
 
@@ -439,10 +487,16 @@ class ReflexServer:
 
         start = time.perf_counter()
 
-        # Prepare inputs
-        noisy_actions = np.random.randn(
-            1, self.chunk_size, self.action_dim
-        ).astype(np.float32)
+        # Prepare inputs — optionally seed noise externally so test harnesses
+        # can produce deterministic outputs matching a reference pipeline.
+        if noise is not None:
+            noisy_actions = np.asarray(noise, dtype=np.float32)
+            if noisy_actions.ndim == 2:
+                noisy_actions = noisy_actions[np.newaxis, ...]
+        else:
+            noisy_actions = np.random.randn(
+                1, self.chunk_size, self.action_dim
+            ).astype(np.float32)
         position_ids = np.arange(self.chunk_size, dtype=np.int64).reshape(1, -1)
 
         # VLM prefix conditioning via orchestrator
