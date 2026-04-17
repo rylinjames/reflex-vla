@@ -82,9 +82,14 @@ goals:
     check: "test -f src/reflex/safety/audit_log.py && .venv/bin/python -c 'from reflex.safety.audit_log import AuditLog' 2>/dev/null"
     weight: 3
 
+  - id: calibration-metrics
+    description: "reflex eval --calibration computes ECE + Brier + NLL on any lerobot dataset — the one non-sim metric with a monotonic link to real-task success (Zollo 2025). Differentiator vs other VLA deployment tools."
+    check: "test -f src/reflex/eval/calibration.py && .venv/bin/python -c 'from reflex.eval.calibration import compute_ece, compute_brier, compute_nll' 2>/dev/null"
+    weight: 7
+
   # ── REGRESSION GATE (runs after every /evolve cycle) ──────────────
 
-  - id: sim-smoke-test
-    description: "Trajectory replay against Open X-Embodiment data — predicted actions within L2 threshold of expert"
-    check: "test -f scripts/sim_smoke_test.py && .venv/bin/python scripts/sim_smoke_test.py --quick 2>/dev/null"
+  - id: native-path-parity
+    description: "Native export path (lerobot SmolVLAPolicy + DecomposedRMSNorm) matches PyTorch reference to cos=1.0000 end-to-end. The one load-bearing number for reflex's deployment-parity claim."
+    check: "test -f src/reflex/runtime/smolvla_native.py && test -f scripts/local_full_diff.py && REFLEX_NATIVE=1 .venv/bin/python scripts/local_full_diff.py 2>&1 | grep -q 'cos=+1.000'"
     weight: 10
