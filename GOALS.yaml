@@ -21,14 +21,29 @@ goals:
     check: "test -f src/reflex/distill/dmpo.py && .venv/bin/python -c 'from reflex.distill.dmpo import DMPOTrainer' 2>/dev/null"
     weight: 9
 
-  - id: stripe-license-gating
-    description: "Stripe subscription verification gates Pro-tier features (distill, fleet batching) behind a valid license key"
-    check: "test -f src/reflex/licensing.py && .venv/bin/python -c 'from reflex.licensing import verify_license' 2>/dev/null"
-    weight: 8
+  - id: multi-model-native-parity
+    description: "Native export path with cos=1.0000 parity on SmolVLA AND pi0 AND pi0.5 AND GR00T (not just SmolVLA). Same DecomposedRMSNorm-swap pattern, 4x the moat."
+    check: "test -f tests/test_native_parity.py && .venv/bin/python -m pytest tests/test_native_parity.py -q 2>/dev/null"
+    weight: 9
+
+  - id: jetson-benchmark-ci
+    description: "GitHub Action runs reflex bench on real Jetson hardware (CloudJetson or loaner) every commit, publishes ms/step per target to a public dashboard. Turns Leg B from static claim into per-commit proof."
+    check: "test -f .github/workflows/jetson-bench.yml"
+    weight: 9
 
   - id: ros2-bridge
     description: "reflex serve --ros2 wraps the HTTP endpoint with a thin rclpy action server for native ROS2 integration"
     check: "grep -q 'ros2' src/reflex/runtime/server.py 2>/dev/null || test -f src/reflex/runtime/ros2_bridge.py"
+    weight: 8
+
+  - id: calibration-metrics
+    description: "reflex eval --calibration computes ECE + Brier + NLL on any lerobot dataset — the one non-sim metric with a monotonic link to real-task success (Zollo 2025). Differentiator vs other VLA deployment tools."
+    check: "test -f src/reflex/eval/calibration.py && .venv/bin/python -c 'from reflex.eval.calibration import compute_ece, compute_brier, compute_nll' 2>/dev/null"
+    weight: 8
+
+  - id: prefix-kv-cache-reuse
+    description: "reflex serve --cache-prefix reuses VLM prefix K/V across the 10-step denoise loop and multi-step rollouts. Dexmal 2510.26742 showed this unlocks 5-10x throughput for production trajectory serving."
+    check: "grep -q 'prefix_cache\\|cache_prefix' src/reflex/runtime/server.py 2>/dev/null"
     weight: 8
 
   # ── MEDIUM-HIGH (weight 7) ────────────────────────────────────────
@@ -48,11 +63,26 @@ goals:
     check: "grep -q 'api.key\\|api_key\\|X-Reflex-Key' src/reflex/runtime/server.py 2>/dev/null"
     weight: 7
 
+  - id: action-chunk-buffering
+    description: "reflex serve --replan-hz N --execute-hz M handles async replan-while-execute with a ring buffer. Real production pattern (Physical Intelligence uses it) — robots execute at 100Hz, VLAs plan at 20Hz."
+    check: "grep -q 'replan_hz\\|sliding_window\\|action_buffer' src/reflex/runtime/server.py 2>/dev/null"
+    weight: 7
+
   # ── MEDIUM (weight 5-6) ───────────────────────────────────────────
 
   - id: latency-histograms
     description: "/act response includes latency_p50, latency_p95, latency_p99, jitter_ms fields"
     check: "grep -q 'latency_p95\\|p95' src/reflex/runtime/server.py 2>/dev/null"
+    weight: 6
+
+  - id: stripe-license-gating
+    description: "Stripe subscription verification gates Pro-tier features (distill, fleet batching) behind a valid license key. Revenue feature — not a moat piece, just a wrapper."
+    check: "test -f src/reflex/licensing.py && .venv/bin/python -c 'from reflex.licensing import verify_license' 2>/dev/null"
+    weight: 6
+
+  - id: export-verification-report
+    description: "Every reflex export auto-writes <export_dir>/VERIFICATION.md with per-stage cos, L2, max_abs, ONNX sizes, opset, target-hardware compat, provenance hash. 'Ship a receipt, not just a binary.'"
+    check: "grep -q 'VERIFICATION.md\\|verification_report' src/reflex/exporters/*.py 2>/dev/null"
     weight: 6
 
   - id: adaptive-denoise-fix
@@ -81,11 +111,6 @@ goals:
     description: "reflex serve --audit-db appends every /act call to a SHA-256 hash-chain SQLite log"
     check: "test -f src/reflex/safety/audit_log.py && .venv/bin/python -c 'from reflex.safety.audit_log import AuditLog' 2>/dev/null"
     weight: 3
-
-  - id: calibration-metrics
-    description: "reflex eval --calibration computes ECE + Brier + NLL on any lerobot dataset — the one non-sim metric with a monotonic link to real-task success (Zollo 2025). Differentiator vs other VLA deployment tools."
-    check: "test -f src/reflex/eval/calibration.py && .venv/bin/python -c 'from reflex.eval.calibration import compute_ece, compute_brier, compute_nll' 2>/dev/null"
-    weight: 7
 
   # ── REGRESSION GATE (runs after every /evolve cycle) ──────────────
 
