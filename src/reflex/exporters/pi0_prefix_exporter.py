@@ -373,12 +373,50 @@ def export_pi0_prefix(
         optimum_export_onnx(gemma_pt_dir, "text-generation-with-past", gemma_onnx_dir)
     result["files"]["decoder_prefill"] = str(gemma_onnx_dir / "model.onnx")
 
-    # 5. Expert stack — TODO: reuse pi0_exporter.build_pi0_expert_stack + export
-    #    (expert is already handled by pi0_exporter.export_pi0; this new exporter
-    #    replaces only the prefix pieces, keeps the expert path identical)
-    logger.info(
-        "Expert stack — delegate to pi0_exporter.export_pi0 (not yet composed here)"
-    )
+    # 5. Expert stack — reuse existing pi0_exporter.build_pi0_expert_stack
+    #
+    # NOTE (known limitation): pi0_exporter's expert is self-attention only
+    # and does NOT consume prefix KV from the VLM backbone. That means the
+    # current composed pipeline would produce actions conditioned on RANDOM
+    # VLM context (same caveat as the pre-Apr-17 SmolVLA decomposed path).
+    #
+    # Full end-to-end parity (cos >= 0.999) requires extending the expert to
+    # concat per-layer prefix_kv_{i}_{k,v} onto the action k/v before softmax.
+    # That's tracked separately and will ship in a follow-on commit.
+    logger.info("Exporting expert stack (self-attn only — see v0.3 TODO)...")
+    try:
+        from reflex.exporters.pi0_exporter import build_pi0_expert_stack
+        from reflex.exporters.onnx_export import export_module_to_onnx, optimize_onnx
+
+        expert_stack, expert_meta = build_pi0_expert_stack(state_dict, head_dim=128)
+        result["metadata"]["expert"] = expert_meta
+        chunk_size = 50  # pi0 default action chunk
+        action_dim = expert_meta["action_dim"]
+
+        dummy_actions = torch.randn(1, chunk_size, action_dim)
+        dummy_time = torch.tensor([0.5])
+        dummy_pos = torch.arange(chunk_size).unsqueeze(0)
+
+        expert_onnx = output_dir / "expert_stack.onnx"
+        export_module_to_onnx(
+            expert_stack,
+            (dummy_actions, dummy_time, dummy_pos),
+            expert_onnx,
+            input_names=["noisy_actions", "timestep", "position_ids"],
+            output_names=["velocity"],
+            dynamic_axes={
+                "noisy_actions": {0: "batch"},
+                "timestep": {0: "batch"},
+                "position_ids": {0: "batch"},
+            },
+            opset_version=19,
+        )
+        optimize_onnx(expert_onnx)
+        result["files"]["expert_stack"] = str(expert_onnx)
+        logger.info("Expert stack exported: %s", expert_onnx)
+    except Exception as e:
+        logger.warning("Expert export failed (non-fatal): %s", e)
+        result["metadata"]["expert_error"] = str(e)
 
     # 6. Save config manifest
     config = {
