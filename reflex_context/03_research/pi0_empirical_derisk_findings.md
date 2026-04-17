@@ -83,7 +83,83 @@ Optimum does NOT support `smolvlm` model type (confirmed via empirical export at
 
 **But:** we learned Optimum DOES support `gemma` and `siglip` as separate architectures. That's the unlock.
 
-## Next action: user unblock + Day 2 tasks
+## Day 2 — tiny-Gemma Optimum sanity PASSED
+
+Ran `scripts/local_tiny_gemma_sanity.py` to verify the Optimum + Gemma + KV-extraction path without waiting on the slow xet-bridge download of the real Gemma-2b weights.
+
+**Config:** 2-layer Gemma, hidden=128, GQA 4/2 heads, head_dim=32, vocab=1000, 0.4M params total.
+
+**Export command:** `optimum-cli export onnx --model <local_pt> --task text-generation-with-past --framework pt <out>`
+
+**Result:**
+
+```
+ONNX inputs:
+  input_ids: [batch_size, sequence_length]
+  attention_mask: [batch_size, past_sequence_length + sequence_length]
+  past_key_values.0.key: [batch_size, 2, past_sequence_length, 32]
+  past_key_values.0.value: [batch_size, 2, past_sequence_length, 32]
+  past_key_values.1.key: [batch_size, 2, past_sequence_length, 32]
+  past_key_values.1.value: [batch_size, 2, past_sequence_length, 32]
+
+ONNX outputs:
+  logits: [batch_size, sequence_length, 1000]
+  present.0.key: [batch_size, 2, past_sequence_length + sequence_length, 32]
+  present.0.value: [batch_size, 2, past_sequence_length + sequence_length, 32]
+  present.1.key: [...]
+  present.1.value: [...]
+
+PARITY:
+  logits max_abs_diff:  7.15e-07
+  logits mean_abs_diff: 3.21e-08
+  logits cos_sim:       +1.00000000
+  present.0.key diff:   1.79e-07
+  VERDICT: PASS
+```
+
+**What this proves (big deal):**
+
+1. **Optimum's Gemma → ONNX path is bit-exact** — cos=+1.00000000, max_abs_diff at float32 precision limits (1e-7 range).
+2. **The exported graph exposes per-layer K/V as named outputs** — `present.0.key`, `present.1.value`, etc. This is EXACTLY the pattern pi0 needs for prefix-KV extraction.
+3. **GQA is handled correctly** — 2 kv_heads + 4 q_heads + head_dim=32 all preserved.
+4. **Dynamic axes work** — `past_sequence_length + sequence_length` properly parameterized (supports variable prompt lengths for pi0's dynamic-length prefix).
+5. **The `text-generation-with-past` task flag does the right thing** — no custom OnnxConfig subclass needed for Gemma.
+
+**What this does NOT prove (residual risk):**
+
+- Won't catch Gemma-2b-scale issues (sqrt(hidden) constant-folding in FP32 vs BF16) until the real weights arrive
+- Doesn't test pi0's fine-tuned Gemma (different weight statistics from plain Gemma base)
+- Doesn't test the expert stack or flow-matching glue — those are still our custom code
+- Doesn't cover SigLIP (download still blocked by xet-bridge; pivot needed)
+
+**Revised mess-up probability after Day 2 empirical:**
+
+- Was: 25–30%
+- Now: **~20–25%**
+
+The single biggest unknown (Optimum correctness) is resolved. Remaining risk is in pi0-specific integration code + SigLIP path + Gemma-2b scale parity.
+
+## Gemma-2b full-scale download status
+
+- **In progress** ~731MB / ~5GB at time of this write (2026-04-17 early eve)
+- xet-bridge intermittently throttles but does resume
+- Will enable full-scale Optimum Gemma-2b export test once complete
+
+## SigLIP download — blocked
+
+- `google/siglip-so400m-patch14-224` (3.3GB): xet-bridge stalls after ~30MB. Connection reset by peer.
+- `google/siglip-base-patch16-224` (400MB): stalls at 0 bytes on incomplete file.
+- **Pivot option:** pi0_base's cached state_dict contains a PaliGemma SigLIP subset. We can extract those weights and bypass HF download for SigLIP entirely.
+- **Alternative:** resume later when xet-bridge cooperates (works intermittently).
+
+## Next concrete actions
+
+1. Wait for Gemma-2b download to complete (~30-60 min more based on observed rate).
+2. Run full `optimum-cli export onnx --model google/gemma-2b --task text-generation-with-past` — verify scale parity.
+3. If Gemma-2b parity holds → commit to pi0-onnx-parity implementation at 1.5–2 week estimate.
+4. Defer SigLIP to next session; in the meantime, extract SigLIP weights from pi0_base cache.
+
+## Original Day 2 plan (kept for reference)
 
 ### User: unblock HF auth
 

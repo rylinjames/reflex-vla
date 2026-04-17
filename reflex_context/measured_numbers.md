@@ -20,6 +20,7 @@ Reproducible on a fresh clone with the linked script at the linked commit. These
 | 2026-04-17 | State projection vs PyTorch | cos = 1.0000 | `scripts/local_stage_diff.py` | `0616265` |
 | 2026-04-17 | Per-layer vlm_k (decomposed path) | cos = 1.0000 | `scripts/local_stage_diff.py` | `0616265` |
 | 2026-04-17 | Single self-attn layer (layer 0, isolated weight copy) | cos = 1.0000 to 1e-5 | `scripts/local_single_layer_diff.py` | `0616265` |
+| 2026-04-17 | Optimum-exported tiny Gemma ONNX vs PyTorch (`text-generation-with-past`) | cos = +1.00000000, max_abs_diff = 7.15e-07, KV diff = 1.79e-07 | `scripts/local_tiny_gemma_sanity.py` (per-layer K/V exposed as `present.N.key/value` outputs) | `85c24c0` |
 
 **Headline claim:** "Reflex's native export path matches the reference PyTorch policy to cos = 1.0000 end-to-end on SmolVLA." This is the only number load-bearing for the product pitch today.
 
