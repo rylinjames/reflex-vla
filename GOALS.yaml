@@ -26,6 +26,11 @@ goals:
     check: "test -f tests/test_native_parity.py && .venv/bin/python -m pytest tests/test_native_parity.py -q 2>/dev/null"
     weight: 9
 
+  - id: smolvla-onnx-parity
+    description: "End-to-end SmolVLA ONNX export produces cos >= 0.999 vs reference PyTorch predict_action_chunk on shared noise. Jetson customers deploy the ONNX path (not the PyTorch native path), so this is the real parity claim for Jetson-targeted customers. native-path-parity only verifies PyTorch. This goal verifies the ONNX path we actually ship."
+    check: "test -f tests/test_smolvla_onnx_parity.py && .venv/bin/python -m pytest tests/test_smolvla_onnx_parity.py -q 2>/dev/null"
+    weight: 9
+
   - id: pi0-onnx-parity
     description: "End-to-end pi0 ONNX export produces cos >= 0.999 vs reference PyTorch sample_actions on shared noise. Covers PaliGemma vision + Gemma language backbone + Gemma expert + flow matching loop. src/reflex/exporters/pi0_exporter.py (584 lines) exists but cos-parity has never been verified on shared-noise discipline. The cross-framework moat for pi0 — one of 4 models claimed to work."
     check: "test -f tests/test_pi0_onnx_parity.py && .venv/bin/python -m pytest tests/test_pi0_onnx_parity.py -q 2>/dev/null"

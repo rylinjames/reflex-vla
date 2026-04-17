@@ -18,29 +18,26 @@ Operational plan for shipping Reflex VLA v0.2 — the first sellable version. De
 
 ---
 
-## MVP ship list (11 goals)
+## MVP ship list (12 goals)
 
 Priority order reflects dependency + moat impact, not raw weight.
 
 | # | goal_id (GOALS.yaml) | weight | status | ETA | notes |
 |---|---|---|---|---|---|
-| 1 | `native-path-parity` | 10 | ✅ done | 0 | commit 4c0f817 |
+| 1 | `native-path-parity` | 10 | ✅ done | 0 | commit 4c0f817 — SmolVLA PyTorch path cos=1.0000 |
 | 2 | `vlm-prefix-encoder` | 10 | ✅ done | 0 | check passes (real SmolVLM2 + SmolLM2 ONNX) |
 | 3 | `text-embedder-onnx` | 10 | ✅ done | 0 | check passes |
 | 4 | `quickstart-docs` | 6 | ✅ done | 0 | check passes; may still need polish pre-launch |
-| 5 | `pi0-onnx-parity` | 9 | ❌ blocked | 1–2w | needs shared-noise cos verification on existing pi0_exporter.py |
-| 6 | `jetson-benchmark-ci` | 9 | ❌ blocked | 2–3d | Amazon-return Orin Nano $249 + community bounty ($20–50) in parallel |
-| 7 | `multi-model-native-parity` | 9 | ❌ blocked | follows #5 | pi0/pi0.5/GR00T native parity; pi0 = trivial (no swap), pi0.5 + GR00T need AdaRMSNorm / AdaLN verification |
-| 8 | `ros2-bridge` | 8 | ❌ blocked | ~1w | `reflex serve --ros2` wrapping /act with rclpy action server |
-| 9 | `nan-guard-hardening` | 7 | ❌ blocked | ~3–5d | reject NaN/Inf + staleness kill-switch after N consecutive clamps |
-| 10 | `docker-image-distribution` | 7 | ❌ blocked | ~2d | `ghcr.io/rylinjames/reflex:<version>-<target>` per-release images |
-| 11 | `export-verification-report` | 6 | ❌ blocked | ~3d | auto-write `<export_dir>/VERIFICATION.md` with cos/L2/opset/hash receipt |
+| 5 | `smolvla-onnx-parity` | 9 | ❌ blocked | ~1w | ONNX path cos≥0.999 vs PyTorch ref — the real Jetson customer claim |
+| 6 | `pi0-onnx-parity` | 9 | ❌ blocked | 1–2w | shared-noise cos verification on existing pi0_exporter.py |
+| 7 | `jetson-benchmark-ci` | 9 | ❌ blocked | 2–3d | Amazon-return Orin Nano $249 + community bounty ($20–50) in parallel |
+| 8 | `multi-model-native-parity` | 9 | ❌ blocked | follows #6 | pi0/pi0.5/GR00T native parity; pi0 = trivial (no swap), pi0.5 + GR00T need AdaRMSNorm / AdaLN verification |
+| 9 | `ros2-bridge` | 8 | ❌ blocked | ~1w | `reflex serve --ros2` wrapping /act with rclpy action server |
+| 10 | `nan-guard-hardening` | 7 | ❌ blocked | ~3–5d | reject NaN/Inf + staleness kill-switch after N consecutive clamps |
+| 11 | `docker-image-distribution` | 7 | ❌ blocked | ~2d | `ghcr.io/rylinjames/reflex:<version>-<target>` per-release images |
+| 12 | `export-verification-report` | 6 | ❌ blocked | ~3d | auto-write `<export_dir>/VERIFICATION.md` with cos/L2/opset/hash receipt |
 
-**Total remaining: 7 goals, ~4–7 weeks solo.**
-
-### Known gap (not yet in GOALS.yaml)
-
-- **`smolvla-onnx-parity`** — the SmolVLA ONNX path (for Jetson deployment) has NOT been verified at cos≥0.999 under shared-noise discipline. `native-path-parity` only checks the PyTorch reference path. Jetson customers deploy the ONNX path, not the PyTorch path. This should be a weight-9 goal parallel to `pi0-onnx-parity`. Flagged for the next GOALS.yaml update.
+**Total remaining: 8 goals, ~5–8 weeks solo** (added smolvla-onnx-parity ~1w).
 
 ---
 
@@ -119,4 +116,4 @@ This doc tracks three categories of change:
 
 ---
 
-**Last updated:** 2026-04-17 (commit HEAD: `ec71d81`)
+**Last updated:** 2026-04-17 (MVP ship list expanded 11 → 12 with smolvla-onnx-parity)
