@@ -16,6 +16,10 @@ class DecomposedRMSNorm(nn.Module):
     """RMSNorm decomposed into elementwise ops for ONNX export.
 
     Replaces: y = x * rsqrt(mean(x^2) + eps) * weight
+
+    Used for Llama-family RMSNorm (weight centered at 1). For Gemma-family
+    (weight centered at 0 with `(1 + weight)` scaling), use DecomposedGemmaRMSNorm
+    or pre-transform the weight via `weight_for_gemma(orig_weight)`.
     """
 
     def __init__(self, weight: torch.Tensor, eps: float = 1e-6):
@@ -27,6 +31,63 @@ class DecomposedRMSNorm(nn.Module):
         variance = x.to(torch.float32).pow(2).mean(-1, keepdim=True)
         x_normed = x * torch.rsqrt(variance + self.eps)
         return (x_normed * self.weight).to(x.dtype)
+
+
+class DecomposedGemmaRMSNorm(nn.Module):
+    """Gemma-family RMSNorm with `(1 + weight)` parameterization.
+
+    Gemma trains the norm weight centered at 0, then applies `(1 + weight)`
+    at inference. Used by PaliGemma (pi0's backbone). If you swap GemmaRMSNorm
+    with this variant and copy the weight directly, the numerics match. If you
+    try to use DecomposedRMSNorm you must pre-transform: `weight -> (1 + weight)`.
+    """
+
+    def __init__(self, weight: torch.Tensor, eps: float = 1e-6):
+        super().__init__()
+        self.register_buffer("weight", weight.clone())
+        self.eps = eps
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        variance = x.to(torch.float32).pow(2).mean(-1, keepdim=True)
+        x_normed = x * torch.rsqrt(variance + self.eps)
+        return (x_normed * (1.0 + self.weight)).to(x.dtype)
+
+
+def swap_rmsnorm_variants(model: nn.Module) -> int:
+    """Replace every RMSNorm-family layer with its decomposed equivalent.
+
+    Handles both Llama-family (RMSNorm, LlamaRMSNorm, SmolLM2RMSNorm) and
+    Gemma-family (GemmaRMSNorm) via the correct `(1 + weight)` parameterization.
+    Returns the number of layers swapped.
+
+    Pattern: walk all modules, match by class name, setattr on the parent.
+    Safe to call multiple times — already-swapped layers are skipped.
+    """
+    llama_family = {"RMSNorm", "LlamaRMSNorm", "SmolLM2RMSNorm"}
+    gemma_family = {"GemmaRMSNorm", "Gemma2RMSNorm", "Gemma3RMSNorm"}
+
+    count = 0
+    for parent_name, parent in list(model.named_modules()):
+        for child_name, child in list(parent.named_children()):
+            tn = type(child).__name__
+            w = getattr(child, "weight", None)
+            if w is None:
+                continue
+            eps = getattr(child, "variance_epsilon", None)
+            if eps is None:
+                eps = getattr(child, "eps", 1e-6)
+
+            if tn in llama_family:
+                new_norm = DecomposedRMSNorm(w.detach().clone(), eps=eps)
+            elif tn in gemma_family:
+                new_norm = DecomposedGemmaRMSNorm(w.detach().clone(), eps=eps)
+            else:
+                continue
+
+            new_norm.to(dtype=w.dtype, device=w.device)
+            setattr(parent, child_name, new_norm)
+            count += 1
+    return count
 
 
 class DecomposedAdaRMSNorm(nn.Module):

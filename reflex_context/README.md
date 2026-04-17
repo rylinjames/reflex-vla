@@ -100,6 +100,7 @@ Note: `01_architecture`, `02_bugs_fixed`, `03_research`, `04_iteration_lessons`,
 
 **Architecture**
 - How does SmolVLA forward pass work? → `01_architecture/smolvla_forward_pass.md`
+- Does pi0 need DecomposedRMSNorm swap? → `01_architecture/pi0_rmsnorm_already_decomposed.md` (answer: no, PiGemmaRMSNorm is already elementwise)
 - Why do we decompose RMSNorm and RoPE? → `01_architecture/onnx_export_decisions.md`
 - What's the serve pipeline? → `01_architecture/reflex_server_stack.md`
 - How does GR00T's full-stack wrap work? → `01_architecture/gr00t_full_stack.md`
