@@ -26,6 +26,7 @@ Internal knowledge preservation for the Reflex VLA project. This folder is the s
 ```
 reflex_context/
 ├── README.md                                    ← you are here
+├── mvp_queue.md                                 — MVP ship list (11 goals), deferred-to-v0.3 list, pricing + outreach
 ├── measured_numbers.md                          — verified / unverified / unmeasured (single source of truth for claims)
 ├── _raw/                                        — verbatim session / git / script extracts (source of truth)
 │   ├── sessions_md.md
@@ -123,6 +124,10 @@ Note: `01_architecture`, `02_bugs_fixed`, `03_research`, `04_iteration_lessons`,
 - How should I bisect a correctness bug? → `04_iteration_lessons/diagnostic_ladder.md` (stage diff → single layer → composition)
 - How much does a hunting session cost? → `04_iteration_lessons/cost_log.md` (~$8-15 Modal per session, $200-500 for distill)
 - Why does `subprocess.run(capture_output=True)` look like it hangs? → `04_iteration_lessons/subprocess_buffering.md` (answer: use a file for stdout, not PIPE; stream line-by-line)
+
+**Product / strategy (operational)**
+- **What ships in MVP, what defers to v0.3?** → `mvp_queue.md`
+- **Who are the first 3 customers and pricing?** → `mvp_queue.md` § Pricing + customer outreach
 
 **Benchmarks**
 - **What can we actually claim?** → `measured_numbers.md` (verified / unverified / unmeasured — cite only from Verified)
