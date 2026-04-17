@@ -50,6 +50,7 @@ from typing import Any
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from huggingface_hub import snapshot_download
 from safetensors import safe_open
 
@@ -193,6 +194,127 @@ def build_gemma_dir(state: dict[str, torch.Tensor], out_dir: Path) -> Path:
         })
     )
     return out_dir
+
+
+class Pi0ExpertStackWithPrefix(nn.Module):
+    """Pi0 expert stack that consumes per-layer VLM prefix-KV.
+
+    Unlike SmolVLA's ExpertStack which uses a small number of cross-attn
+    layers, pi0's expert applies block-causal attention on EVERY layer:
+    per-layer action tokens attend to (prefix_kv_i + action_kv_i).
+
+    Inputs to `forward`:
+        noisy_actions: [B, chunk_size, action_dim]
+        timestep:      [B]
+        position_ids:  [1, chunk_size]   (absolute positions AFTER prefix_len)
+        prefix_k:      [L, B, prefix_len, nkv, hd]  per-layer, RoPE-applied
+        prefix_v:      [L, B, prefix_len, nkv, hd]  per-layer, no RoPE
+
+    Output:
+        velocity: [B, chunk_size, action_dim]
+    """
+
+    def __init__(
+        self,
+        layers: list,
+        expert_hidden: int,
+        action_dim: int,
+        suffix_weights: dict,
+        action_proj_weights: dict,
+        final_norm_weight: torch.Tensor,
+    ):
+        super().__init__()
+        from reflex.decompose import DecomposedRMSNorm
+        self.layers = nn.ModuleList(layers)
+        self.expert_hidden = expert_hidden
+
+        self.action_in_proj = nn.Linear(action_dim, expert_hidden)
+        self.action_time_mlp_in = nn.Linear(expert_hidden * 2, expert_hidden)
+        self.action_time_mlp_out = nn.Linear(expert_hidden, expert_hidden)
+        self.action_in_proj.weight = nn.Parameter(suffix_weights["in_w"])
+        self.action_in_proj.bias = nn.Parameter(suffix_weights["in_b"])
+        self.action_time_mlp_in.weight = nn.Parameter(suffix_weights["t_in_w"])
+        self.action_time_mlp_in.bias = nn.Parameter(suffix_weights["t_in_b"])
+        self.action_time_mlp_out.weight = nn.Parameter(suffix_weights["t_out_w"])
+        self.action_time_mlp_out.bias = nn.Parameter(suffix_weights["t_out_b"])
+
+        self.action_out_proj = nn.Linear(expert_hidden, action_dim)
+        self.action_out_proj.weight = nn.Parameter(action_proj_weights["w"])
+        self.action_out_proj.bias = nn.Parameter(action_proj_weights["b"])
+
+        self.final_norm = DecomposedRMSNorm(final_norm_weight)
+
+    def forward(
+        self,
+        noisy_actions: torch.Tensor,
+        timestep: torch.Tensor,
+        position_ids: torch.Tensor,
+        prefix_k: torch.Tensor,
+        prefix_v: torch.Tensor,
+    ) -> torch.Tensor:
+        from reflex.exporters.smolvla_exporter import _sinusoidal_pos_embedding
+
+        b, c, _ = noisy_actions.shape
+        act = self.action_in_proj(noisy_actions)
+        t_emb = _sinusoidal_pos_embedding(timestep, self.expert_hidden)
+        t_emb = t_emb.unsqueeze(1).expand(-1, c, -1)
+        x = self.action_time_mlp_out(
+            F.silu(self.action_time_mlp_in(torch.cat([act, t_emb], dim=-1)))
+        )
+
+        for i, layer in enumerate(self.layers):
+            # prefix_k[i], prefix_v[i]: [B, prefix_len, nkv, hd]
+            x = layer(
+                x,
+                position_ids,
+                prefix_k_concat=prefix_k[i],
+                prefix_v_concat=prefix_v[i],
+            )
+
+        x = self.final_norm(x)
+        return self.action_out_proj(x)
+
+
+def build_pi0_expert_with_prefix(state_dict: dict[str, torch.Tensor]) -> tuple[Pi0ExpertStackWithPrefix, dict]:
+    """Build pi0's expert stack wired for per-layer prefix-KV concat.
+
+    Reuses the existing pi0_exporter.build_pi0_expert_stack to create individual
+    layers (with correct weights), then wraps them in Pi0ExpertStackWithPrefix.
+    """
+    from reflex.exporters.pi0_exporter import build_pi0_expert_stack
+
+    base_stack, meta = build_pi0_expert_stack(state_dict, head_dim=128)
+    # Pull layer list out of the base stack; rebuild with prefix-aware wrapper.
+    layers = list(base_stack.layers)
+
+    # Weights for suffix/time MLP + action projections from PI0_ACTION_KEYS
+    from reflex.exporters.pi0_exporter import PI0_ACTION_KEYS
+    suffix = {
+        "in_w": state_dict[PI0_ACTION_KEYS["in_w"]],
+        "in_b": state_dict[PI0_ACTION_KEYS["in_b"]],
+        "t_in_w": state_dict[PI0_ACTION_KEYS["t_in_w"]],
+        "t_in_b": state_dict[PI0_ACTION_KEYS["t_in_b"]],
+        "t_out_w": state_dict[PI0_ACTION_KEYS["t_out_w"]],
+        "t_out_b": state_dict[PI0_ACTION_KEYS["t_out_b"]],
+    }
+    action_proj = {
+        "w": state_dict[PI0_ACTION_KEYS["out_w"]],
+        "b": state_dict[PI0_ACTION_KEYS["out_b"]],
+    }
+    # Final norm
+    base_prefix = "paligemma_with_expert.gemma_expert.model."
+    final_norm_w = state_dict.get(f"{base_prefix}norm.weight", torch.ones(meta["expert_hidden"]))
+
+    stack = Pi0ExpertStackWithPrefix(
+        layers=layers,
+        expert_hidden=meta["expert_hidden"],
+        action_dim=meta["action_dim"],
+        suffix_weights=suffix,
+        action_proj_weights=action_proj,
+        final_norm_weight=final_norm_w,
+    )
+    stack.eval()
+    return stack, meta
 
 
 class MultiModalProjector(nn.Module):
@@ -373,49 +495,57 @@ def export_pi0_prefix(
         optimum_export_onnx(gemma_pt_dir, "text-generation-with-past", gemma_onnx_dir)
     result["files"]["decoder_prefill"] = str(gemma_onnx_dir / "model.onnx")
 
-    # 5. Expert stack — reuse existing pi0_exporter.build_pi0_expert_stack
+    # 5. Expert stack WITH prefix-KV concat (block-causal attention)
     #
-    # NOTE (known limitation): pi0_exporter's expert is self-attention only
-    # and does NOT consume prefix KV from the VLM backbone. That means the
-    # current composed pipeline would produce actions conditioned on RANDOM
-    # VLM context (same caveat as the pre-Apr-17 SmolVLA decomposed path).
-    #
-    # Full end-to-end parity (cos >= 0.999) requires extending the expert to
-    # concat per-layer prefix_kv_{i}_{k,v} onto the action k/v before softmax.
-    # That's tracked separately and will ship in a follow-on commit.
-    logger.info("Exporting expert stack (self-attn only — see v0.3 TODO)...")
+    # pi0's expert uses block-causal attention where every layer's action
+    # tokens attend to (prefix_kv_layer_i + action_kv). Our
+    # Pi0ExpertStackWithPrefix handles this via ExpertGQALayer's new
+    # prefix_k_concat/prefix_v_concat path.
+    logger.info("Exporting expert stack (with per-layer prefix-KV concat)...")
     try:
-        from reflex.exporters.pi0_exporter import build_pi0_expert_stack
         from reflex.exporters.onnx_export import export_module_to_onnx, optimize_onnx
 
-        expert_stack, expert_meta = build_pi0_expert_stack(state_dict, head_dim=128)
+        expert_stack, expert_meta = build_pi0_expert_with_prefix(state_dict)
         result["metadata"]["expert"] = expert_meta
-        chunk_size = 50  # pi0 default action chunk
+
+        chunk_size = 50
         action_dim = expert_meta["action_dim"]
+        n_layers = expert_meta["num_layers"]
+        nkv = expert_meta["n_kv_heads"]
+        hd = expert_meta["head_dim"]
+        # Use a fixed prefix_len for tracing; dynamic axis exposes it at inference
+        dummy_prefix_len = 16
 
         dummy_actions = torch.randn(1, chunk_size, action_dim)
         dummy_time = torch.tensor([0.5])
         dummy_pos = torch.arange(chunk_size).unsqueeze(0)
+        dummy_prefix_k = torch.randn(n_layers, 1, dummy_prefix_len, nkv, hd)
+        dummy_prefix_v = torch.randn(n_layers, 1, dummy_prefix_len, nkv, hd)
 
         expert_onnx = output_dir / "expert_stack.onnx"
         export_module_to_onnx(
             expert_stack,
-            (dummy_actions, dummy_time, dummy_pos),
+            (dummy_actions, dummy_time, dummy_pos, dummy_prefix_k, dummy_prefix_v),
             expert_onnx,
-            input_names=["noisy_actions", "timestep", "position_ids"],
+            input_names=[
+                "noisy_actions", "timestep", "position_ids",
+                "prefix_k", "prefix_v",
+            ],
             output_names=["velocity"],
             dynamic_axes={
-                "noisy_actions": {0: "batch"},
+                "noisy_actions": {0: "batch", 1: "chunk"},
                 "timestep": {0: "batch"},
-                "position_ids": {0: "batch"},
+                "position_ids": {0: "batch", 1: "chunk"},
+                "prefix_k": {1: "batch", 2: "prefix_len"},
+                "prefix_v": {1: "batch", 2: "prefix_len"},
             },
             opset_version=19,
         )
         optimize_onnx(expert_onnx)
         result["files"]["expert_stack"] = str(expert_onnx)
-        logger.info("Expert stack exported: %s", expert_onnx)
+        logger.info("Expert stack exported (with prefix-KV): %s", expert_onnx)
     except Exception as e:
-        logger.warning("Expert export failed (non-fatal): %s", e)
+        logger.warning("Expert export failed: %s", e)
         result["metadata"]["expert_error"] = str(e)
 
     # 6. Save config manifest

@@ -82,14 +82,32 @@ class ExpertGQALayer(nn.Module):
         # Wrong base → wrong frequency per position → corrupts attention.
         self.rope = _DecomposedRoPE(hd, base=rope_theta)
 
-    def forward(self, x, pos_ids, cross_k=None, cross_v=None, kv_mask=None):
+    def forward(
+        self,
+        x,
+        pos_ids,
+        cross_k=None,
+        cross_v=None,
+        kv_mask=None,
+        prefix_k_concat=None,
+        prefix_v_concat=None,
+    ):
         """Run one transformer layer.
 
-        ``kv_mask`` is an optional ``[B, kv_len]`` boolean tensor — True where
-        the KV token is valid, False where it's padding. For cross-attention
-        we set the attention logit to ``-inf`` at padded positions so they
-        contribute zero probability after softmax. Matches real SmolVLA's
-        ``eager_attention_forward`` masked-attention semantics.
+        Three attention modes, mutually exclusive:
+        1. Self-attention (default): k, v come from x (action tokens).
+        2. Cross-attention: `cross_k`/`cross_v` REPLACE action k/v entirely;
+           used by SmolVLA's forward_cross_attn_layer pattern.
+        3. Block-causal prefix concat: `prefix_k_concat`/`prefix_v_concat`
+           are prepended onto action-side k/v AFTER RoPE; attention spans
+           prefix+action tokens. Used by pi0's PaliGemmaWithExpertModel where
+           the VLM's per-layer past_key_values form the prefix.
+
+        For cross-attn, ``kv_mask`` is an optional ``[B, kv_len]`` boolean
+        tensor marking valid KV tokens. Padded positions get -inf logits.
+
+        For block-causal prefix, the prefix tensors are already RoPE'd by the
+        backbone (their absolute position is fixed during the denoise loop).
         """
         b, s, _ = x.shape
         res = x
@@ -97,22 +115,38 @@ class ExpertGQALayer(nn.Module):
         q = self.q_proj(x).view(b, s, self.nq, self.hd).transpose(1, 2)
 
         is_cross = cross_k is not None
+        use_prefix_concat = prefix_k_concat is not None
         k_src = cross_k if is_cross else x
         v_src = cross_v if is_cross else x
-        kv_len = k_src.shape[1]
+        action_kv_len = k_src.shape[1]
 
-        k = self.k_proj(k_src).view(b, kv_len, self.nkv, self.hd).transpose(1, 2)
-        v = self.v_proj(v_src).view(b, kv_len, self.nkv, self.hd).transpose(1, 2)
+        k = self.k_proj(k_src).view(b, action_kv_len, self.nkv, self.hd).transpose(1, 2)
+        v = self.v_proj(v_src).view(b, action_kv_len, self.nkv, self.hd).transpose(1, 2)
         q = self.rope.apply(q, pos_ids)
         if not is_cross:
             k = self.rope.apply(k, pos_ids)
+
+        # Block-causal prefix concat: prepend prefix_kv onto action k/v.
+        # Expected shapes: prefix_k_concat [B, nkv, prefix_len, hd]
+        # (already in post-transpose layout, RoPE-applied by backbone).
+        if use_prefix_concat:
+            # Accept either [B, nkv, prefix_len, hd] (post-transpose) or
+            # [B, prefix_len, nkv, hd] (pre-transpose) shape.
+            pk = prefix_k_concat
+            pv = prefix_v_concat
+            if pk.ndim == 4 and pk.shape[1] != self.nkv:
+                pk = pk.transpose(1, 2)
+                pv = pv.transpose(1, 2)
+            k = torch.cat([pk, k], dim=2)
+            v = torch.cat([pv, v], dim=2)
+
+        kv_len = k.shape[2]
         k = k.unsqueeze(2).expand(-1, -1, self.kv_groups, -1, -1).reshape(b, self.nq, kv_len, self.hd)
         v = v.unsqueeze(2).expand(-1, -1, self.kv_groups, -1, -1).reshape(b, self.nq, kv_len, self.hd)
 
         scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.hd)  # [B, nq, s, kv_len]
         if is_cross and kv_mask is not None:
-            # Mask padded positions: set score to large negative before softmax.
-            # kv_mask broadcast: [B, kv_len] -> [B, 1, 1, kv_len]
+            # Cross-attn padded KV mask: set padded scores to large negative.
             mask = kv_mask[:, None, None, :]
             scores = scores.masked_fill(~mask, -1e9)
         attn = F.softmax(scores, dim=-1)
@@ -420,10 +454,11 @@ def export_smolvla(
                 "vlm_k": dummy_vlm_k.numpy(),
                 "vlm_v": dummy_vlm_v.numpy(),
                 "prefix_offset": dummy_prefix_offset.numpy(),
+                "kv_mask": dummy_kv_mask.numpy(),
             })[0]
             torch_out = expert_stack(
                 dummy_actions, dummy_time, dummy_pos,
-                dummy_vlm_k, dummy_vlm_v, dummy_prefix_offset
+                dummy_vlm_k, dummy_vlm_v, dummy_prefix_offset, dummy_kv_mask
             ).detach().numpy()
             max_diff = float(np.abs(ort_out - torch_out).max())
             result["metadata"]["onnx_validation"] = {"max_diff": max_diff, "passed": max_diff < 0.01}
