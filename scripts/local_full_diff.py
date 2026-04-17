@@ -3,6 +3,19 @@
 Runs end-to-end on the SAME preprocessed batch, SAME noise, compares.
 Fast local iteration (~1 min). Does NOT need Modal.
 """
+import sys
+import types
+
+# Python 3.13 + lerobot 0.5.1 compat: lerobot's policies/__init__ eagerly
+# imports GrootPolicy, whose GR00TN15Config dataclass violates Python 3.13's
+# stricter non-default-after-default validation. We only need SmolVLAPolicy,
+# so stub the broken groot modules before lerobot imports. Upstream bug.
+for _mod in ("lerobot.policies.groot.groot_n1", "lerobot.policies.groot.modeling_groot"):
+    _stub = types.ModuleType(_mod)
+    _stub.GrootPolicy = None
+    _stub.GR00TN15 = None
+    sys.modules[_mod] = _stub
+
 import numpy as np
 import torch
 
@@ -30,6 +43,12 @@ def main():
         to_output=transition_to_batch,
         overrides={"device_processor": {"device": "cpu"}},
     )
+    postprocessor = PolicyProcessorPipeline.from_pretrained(
+        pretrained_model_name_or_path=repo,
+        config_filename="policy_postprocessor.json",
+        to_transition=policy_action_to_transition,
+        to_output=transition_to_policy_action,
+    )
 
     rng = np.random.RandomState(42)
     img = rng.randint(0, 255, (256, 256, 3), dtype=np.uint8)
@@ -51,13 +70,25 @@ def main():
 
     print("Running policy.predict_action_chunk ...")
     with torch.no_grad():
-        torch_actions = policy.predict_action_chunk(
+        torch_actions_norm = policy.predict_action_chunk(
             batch_pp, noise=torch.from_numpy(noise_np)
-        ).cpu().numpy()
+        ).cpu()
+    # Apply postprocessor to get unnormalized actions (matches native server)
+    torch_actions = postprocessor(torch_actions_norm)
+    if hasattr(torch_actions, "detach"):
+        torch_actions = torch_actions.detach().cpu().numpy()
+    else:
+        torch_actions = np.asarray(torch_actions)
 
-    print("Running our ONNX pipeline ...")
-    from reflex.runtime.server import ReflexServer
-    server = ReflexServer("/tmp/reflex_libero_export3", device="cpu", strict_providers=False)
+    import os
+    if os.environ.get("REFLEX_NATIVE", "0") == "1":
+        print("Running NATIVE path (lerobot SmolVLAPolicy + DecomposedRMSNorm) ...")
+        from reflex.runtime.smolvla_native import SmolVLANativeServer
+        server = SmolVLANativeServer("/tmp/reflex_libero_export3", device="cpu", strict_providers=False)
+    else:
+        print("Running decomposed ONNX pipeline ...")
+        from reflex.runtime.server import ReflexServer
+        server = ReflexServer("/tmp/reflex_libero_export3", device="cpu", strict_providers=False)
     server.load()
 
     # same image as raw batch

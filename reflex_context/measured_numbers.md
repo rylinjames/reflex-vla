@@ -14,7 +14,7 @@ Reproducible on a fresh clone with the linked script at the linked commit. These
 
 | Date | Metric | Value | Reproducer | Commit |
 |---|---|---|---|---|
-| 2026-04-17 | Native path (lerobot `SmolVLAPolicy` + `DecomposedRMSNorm` swap) vs PyTorch reference, end-to-end first-action | **cos = 1.0000** | `REFLEX_NATIVE=1 python scripts/local_full_diff.py` | `0616265` |
+| 2026-04-17 | Native path (lerobot `SmolVLAPolicy` + `DecomposedRMSNorm` swap) vs PyTorch reference, end-to-end first-action | **cos = 1.0000, L2 = 0.000** | `pip install 'reflex-vla[native]' && REFLEX_NATIVE=1 python scripts/local_full_diff.py` | `9de9f64` (re-verified post-rebalance; also holds on `0616265`) |
 | 2026-04-17 | Vision encoder (SigLIP) vs PyTorch | cos = 1.0000, L2 = 2.2e-03, max_abs = 1.07e-04 | `scripts/local_stage_diff.py` | `0616265` |
 | 2026-04-17 | Text embedder vs PyTorch | cos = 1.0000 | `scripts/local_stage_diff.py` | `0616265` |
 | 2026-04-17 | State projection vs PyTorch | cos = 1.0000 | `scripts/local_stage_diff.py` | `0616265` |
