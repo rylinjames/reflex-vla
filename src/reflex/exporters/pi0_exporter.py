@@ -69,7 +69,7 @@ PI05_ACTION_KEYS = {
 
 def build_pi0_expert_stack(
     state_dict: dict[str, torch.Tensor],
-    head_dim: int = 128,
+    head_dim: int = 256,  # Fixed 2026-04-17 — was 128 (silent bug: gave nq=16/nkv=2 instead of correct nq=8/nkv=1 per Gemma spec; see reflex_context/02_bugs_fixed/)
 ) -> tuple[ExpertStack, dict]:
     """Build the full pi0 expert stack from state_dict.
 

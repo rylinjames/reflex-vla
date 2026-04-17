@@ -280,10 +280,14 @@ def build_pi0_expert_with_prefix(state_dict: dict[str, torch.Tensor]) -> tuple[P
 
     Reuses the existing pi0_exporter.build_pi0_expert_stack to create individual
     layers (with correct weights), then wraps them in Pi0ExpertStackWithPrefix.
+
+    Critical: head_dim=256 (Gemma standard, confirmed via PI0Policy layer inspection
+    2026-04-17). pi0_exporter.py's default of head_dim=128 was a silent bug that
+    gave nq=16/nkv=2 instead of the correct nq=8/nkv=1 per Gemma config.
     """
     from reflex.exporters.pi0_exporter import build_pi0_expert_stack
 
-    base_stack, meta = build_pi0_expert_stack(state_dict, head_dim=128)
+    base_stack, meta = build_pi0_expert_stack(state_dict, head_dim=256)
     # Pull layer list out of the base stack; rebuild with prefix-aware wrapper.
     layers = list(base_stack.layers)
 
