@@ -29,7 +29,7 @@ Priority order reflects dependency + moat impact, not raw weight.
 | 3 | `text-embedder-onnx` | 10 | ✅ done | 0 | check passes |
 | 4 | `quickstart-docs` | 6 | ✅ done | 0 | check passes; may still need polish pre-launch |
 | 5 | `smolvla-onnx-parity` | 9 | ❌ blocked | ~1w | ONNX path cos≥0.999 vs PyTorch ref — the real Jetson customer claim |
-| 6 | `pi0-onnx-parity` | 9 | ❌ blocked | 1.5–3w | revised after deep research (2026-04-17). ~25–35 engineer-days importable from openpi_on_thor + Tacoin + Isaac-GR00T + Optimum PaliGemma2. ETA depends on NVIDIA license clarity. See [03_research/pi0_onnx_importable_sources.md](03_research/pi0_onnx_importable_sources.md). |
+| 6 | `pi0-onnx-parity` | 9 | ✅ done | 0 | 2026-04-18: single-step ONNX end-to-end cos=+1.0000000. Host-loop in Pi0OnnxServer for num_steps=10 (Path C decision — keeps adaptive denoising + safety + distill wedges viable). See [03_research/pi0_onnx_importable_sources.md](03_research/pi0_onnx_importable_sources.md), [01_architecture/pi0_monolithic_wrap_pattern.md](01_architecture/pi0_monolithic_wrap_pattern.md). |
 | 7 | `jetson-benchmark-ci` | 9 | ❌ blocked | 2–3d | Amazon-return Orin Nano $249 + community bounty ($20–50) in parallel |
 | 8 | `multi-model-native-parity` | 9 | ❌ blocked | follows #6 | pi0/pi0.5/GR00T native parity; pi0 = trivial (no swap), pi0.5 + GR00T need AdaRMSNorm / AdaLN verification |
 | 9 | `ros2-bridge` | 8 | ❌ blocked | ~1w | `reflex serve --ros2` wrapping /act with rclpy action server |
