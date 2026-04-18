@@ -68,6 +68,30 @@ image = (
     })
 )
 
+# GPU-aware image for CUDAExecutionProvider runtime tests. Base image has
+# only `onnxruntime` (CPU). We install `onnxruntime-gpu` + nvidia cudnn/cublas
+# wheels and export LD_LIBRARY_PATH so ORT's CUDA EP can dlopen them.
+gpu_image = (
+    image.pip_install(
+        "onnxruntime-gpu>=1.20,<1.24",
+        "nvidia-cudnn-cu12>=9.0,<10.0",
+        "nvidia-cublas-cu12>=12.0,<13.0",
+        extra_options="--no-deps",
+    )
+    .pip_install("onnxruntime-gpu>=1.20,<1.24")
+    .env({
+        "LD_LIBRARY_PATH": (
+            "/usr/local/lib/python3.12/site-packages/nvidia/cublas/lib:"
+            "/usr/local/lib/python3.12/site-packages/nvidia/cudnn/lib:"
+            "/usr/local/lib/python3.12/site-packages/nvidia/cuda_runtime/lib:"
+            "/usr/local/lib/python3.12/site-packages/nvidia/cufft/lib:"
+            "/usr/local/lib/python3.12/site-packages/nvidia/curand/lib:"
+            "/usr/local/lib/python3.12/site-packages/nvidia/nccl/lib:"
+            "/usr/local/cuda/lib64"
+        ),
+    })
+)
+
 
 @app.function(
     image=image,
@@ -514,16 +538,197 @@ def parity_native_pi0(model_id: str = "lerobot/pi0_base"):
     }
 
 
+@app.function(
+    image=image,
+    gpu="A10G",
+    timeout=1800,
+    volumes={HF_CACHE_PATH: hf_cache},
+    secrets=[_hf_secret()],
+)
+def quality_num_steps_pi0(model_id: str = "lerobot/pi0_base"):
+    """Characterize PyTorch pi0 action drift: num_steps=1 vs num_steps=10.
+
+    We currently ship the num_steps=1 monolithic ONNX because num_steps=10
+    hits a shape-tracing bug during torch.export. This test measures how
+    much action quality is lost by integrating with 1 big Euler step vs
+    10 smaller steps on shared seeded inputs. Informs whether we ship with
+    a "num_steps=1 regression expected" warning or if the drift is small.
+    """
+    import sys, types
+    for _mod in ("lerobot.policies.groot.groot_n1", "lerobot.policies.groot.modeling_groot"):
+        stub = types.ModuleType(_mod); stub.GrootPolicy = None; stub.GR00TN15 = None
+        sys.modules[_mod] = stub
+
+    import numpy as np
+    import torch
+
+    # Need the same patches the export used, so PyTorch runs with the same code
+    from lerobot.policies.pi0 import modeling_pi0
+    from transformers import masking_utils
+    from lerobot.policies import pi_gemma as _pg
+    _orig_embed = modeling_pi0.PaliGemmaWithExpertModel.embed_image
+    def _patched_embed_image(self, image):
+        out_dtype = image.dtype
+        if image.dtype != torch.float32:
+            image = image.to(torch.float32)
+        out = self.paligemma.model.get_image_features(image)
+        features = out.pooler_output if hasattr(out, "pooler_output") else out
+        features = features * self.paligemma.config.text_config.hidden_size ** 0.5
+        if features.dtype != out_dtype:
+            features = features.to(out_dtype)
+        return features
+    modeling_pi0.PaliGemmaWithExpertModel.embed_image = _patched_embed_image
+    _orig_ccm = masking_utils.create_causal_mask
+    def _ccm_shim(*args, **kwargs):
+        if "inputs_embeds" in kwargs and "input_embeds" not in kwargs:
+            kwargs["input_embeds"] = kwargs.pop("inputs_embeds")
+        return _orig_ccm(*args, **kwargs)
+    masking_utils.create_causal_mask = _ccm_shim
+    if hasattr(_pg, "create_causal_mask"):
+        _pg.create_causal_mask = _ccm_shim
+
+    print("[quality] Loading pi0 PyTorch policy...")
+    from lerobot.policies.pi0.modeling_pi0 import PI0Policy
+    policy = PI0Policy.from_pretrained(model_id).eval().to(torch.float32).to("cpu")
+
+    cfg = policy.config
+    B = 1
+    chunk = cfg.chunk_size
+    action_dim = cfg.max_action_dim
+    state_dim = getattr(cfg, "max_state_dim", 32)
+
+    torch.manual_seed(42)
+    img = torch.randn(B, 3, 224, 224, dtype=torch.float32)
+    mask = torch.ones(B, dtype=torch.bool)
+    lang_tokens = torch.randint(0, 257152, (B, 16), dtype=torch.long)
+    lang_masks = torch.ones(B, 16, dtype=torch.bool)
+    state = torch.randn(B, state_dim, dtype=torch.float32)
+    noise = torch.randn(B, chunk, action_dim, dtype=torch.float32)
+    images = [img, img, img]
+    img_masks = [mask, mask, mask]
+
+    with torch.no_grad():
+        a_1 = policy.model.sample_actions(
+            images, img_masks, lang_tokens, lang_masks, state,
+            noise=noise, num_steps=1,
+        ).cpu().numpy()
+        a_10 = policy.model.sample_actions(
+            images, img_masks, lang_tokens, lang_masks, state,
+            noise=noise, num_steps=10,
+        ).cpu().numpy()
+
+    def _cos(a, b):
+        af, bf = a.flatten().astype(np.float64), b.flatten().astype(np.float64)
+        return float(af @ bf / (np.linalg.norm(af) * np.linalg.norm(bf) + 1e-12))
+
+    first_cos = _cos(a_1[0, 0], a_10[0, 0])
+    first_max = float(np.max(np.abs(a_1[0, 0] - a_10[0, 0])))
+    first_l2 = float(np.linalg.norm(a_1[0, 0] - a_10[0, 0]))
+    full_cos = _cos(a_1, a_10)
+    full_max = float(np.max(np.abs(a_1 - a_10)))
+    full_l2 = float(np.linalg.norm(a_1 - a_10))
+    action_range = float(np.max(a_10) - np.min(a_10))
+
+    print(f"[quality] num_steps=1  first-5: {a_1[0, 0, :5]}")
+    print(f"[quality] num_steps=10 first-5: {a_10[0, 0, :5]}")
+    print(f"[quality] first-action: cos={first_cos:.6f}, max_abs={first_max:.3e}, L2={first_l2:.3e}")
+    print(f"[quality] full-chunk:   cos={full_cos:.6f}, max_abs={full_max:.3e}, L2={full_l2:.3e}")
+    print(f"[quality] action range (max-min) at num_steps=10: {action_range:.3f}")
+    print(f"[quality] relative max_abs (first): {first_max / (action_range + 1e-12):.4f}")
+
+    return {
+        "first_cos": first_cos, "first_max_abs": first_max, "first_l2": first_l2,
+        "full_cos": full_cos, "full_max_abs": full_max, "full_l2": full_l2,
+        "action_range": action_range,
+    }
+
+
+@app.function(
+    image=gpu_image,
+    gpu="A10G",
+    timeout=1800,
+    volumes={HF_CACHE_PATH: hf_cache, ONNX_OUTPUT_PATH: onnx_output},
+    secrets=[_hf_secret()],
+)
+def parity_cuda_pi0():
+    """CUDAExecutionProvider vs CPUExecutionProvider parity for the pi0
+    monolithic ONNX. Confirms the GPU serve path produces identical
+    outputs (within float32 tolerance) — a strict gate for
+    `reflex serve --device cuda`."""
+    import numpy as np
+    import onnxruntime as ort
+    from pathlib import Path
+
+    onnx_path = Path(ONNX_OUTPUT_PATH) / "monolithic" / "model.onnx"
+    assert onnx_path.exists(), f"{onnx_path} missing"
+
+    print("[cuda] Creating fixed input batch...")
+    B = 1
+    chunk, action_dim = 50, 32
+    rng = np.random.RandomState(42)
+    img = rng.randn(B, 3, 224, 224).astype(np.float32)
+    mask = np.ones((B,), dtype=np.bool_)
+    lang = rng.randint(0, 257152, (B, 16)).astype(np.int64)
+    lang_mask = np.ones((B, 16), dtype=np.bool_)
+    state = rng.randn(B, 32).astype(np.float32)
+    noise = rng.randn(B, chunk, action_dim).astype(np.float32)
+    inputs = {
+        "img_base": img, "img_wrist_l": img, "img_wrist_r": img,
+        "mask_base": mask, "mask_wrist_l": mask, "mask_wrist_r": mask,
+        "lang_tokens": lang, "lang_masks": lang_mask,
+        "state": state, "noise": noise,
+    }
+
+    print("[cuda] Running on CPUExecutionProvider...")
+    s_cpu = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
+    cpu_inputs = {k: v for k, v in inputs.items() if k in [i.name for i in s_cpu.get_inputs()]}
+    out_cpu = s_cpu.run(None, cpu_inputs)[0]
+    print(f"[cuda] CPU first: {out_cpu[0, 0, :5]}")
+
+    print("[cuda] Running on CUDAExecutionProvider...")
+    s_gpu = ort.InferenceSession(
+        str(onnx_path),
+        providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+    )
+    used = s_gpu.get_providers()[0]
+    print(f"[cuda] GPU session providers (first): {used}")
+    gpu_inputs = {k: v for k, v in inputs.items() if k in [i.name for i in s_gpu.get_inputs()]}
+    out_gpu = s_gpu.run(None, gpu_inputs)[0]
+    print(f"[cuda] GPU first: {out_gpu[0, 0, :5]}")
+
+    def _cos(a, b):
+        af, bf = a.flatten().astype(np.float64), b.flatten().astype(np.float64)
+        return float(af @ bf / (np.linalg.norm(af) * np.linalg.norm(bf) + 1e-12))
+
+    cos = _cos(out_cpu, out_gpu)
+    max_abs = float(np.max(np.abs(out_cpu - out_gpu)))
+    print(f"[cuda] CPU vs GPU: cos={cos:.8f}, max_abs={max_abs:.3e}")
+    print(f"[cuda] VERDICT: {'PASS' if cos >= 0.999 and used == 'CUDAExecutionProvider' else 'FAIL'}")
+    return {"cos": cos, "max_abs": max_abs, "used_provider": used}
+
+
 @app.local_entrypoint()
-def main(num_steps: int = 1, parity: bool = False, native: bool = False):
+def main(
+    num_steps: int = 1,
+    parity: bool = False,
+    native: bool = False,
+    quality: bool = False,
+    cuda: bool = False,
+):
     """Default to num_steps=1 (the only working config currently).
 
     Usage:
         modal run scripts/modal_pi0_monolithic_export.py              # export
         modal run scripts/modal_pi0_monolithic_export.py --parity     # ONNX parity
         modal run scripts/modal_pi0_monolithic_export.py --native     # native parity
+        modal run scripts/modal_pi0_monolithic_export.py --quality    # num_steps=1 vs =10
+        modal run scripts/modal_pi0_monolithic_export.py --cuda       # CPU vs CUDA ORT
     """
-    if native:
+    if cuda:
+        result = parity_cuda_pi0.remote()
+    elif quality:
+        result = quality_num_steps_pi0.remote()
+    elif native:
         result = parity_native_pi0.remote()
     elif parity:
         result = parity_test_monolithic.remote()

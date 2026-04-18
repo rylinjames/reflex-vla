@@ -23,10 +23,11 @@ pip install 'reflex-vla[serve,gpu] @ git+https://github.com/rylinjames/reflex-vl
 # `reflex serve` errors loudly if cuDNN can't load — no silent CPU fallback.
 
 # 2. Export any supported VLA to ONNX (auto-detects model type)
-reflex export lerobot/pi0_base --target orin-nano --output ./p0
+# SmolVLA fits on Orin Nano 8GB; pi0 (~12GB monolithic) needs Orin 16GB+ or desktop GPU.
+reflex export lerobot/smolvla_base --target desktop --output ./smol
 
 # 3. Serve it — POST /act to get 50-step action chunks
-reflex serve ./p0 --port 8000
+reflex serve ./smol --port 8000
 ```
 
 In another terminal:
@@ -143,7 +144,7 @@ The response JSON surfaces telemetry from each enabled wedge so you can see what
 | `thor` | Jetson Thor | 128 GB | fp8 |
 | `desktop` | RTX / A100 | 40 GB | fp16 |
 
-All 4 flow-matching VLAs fit on a `$500` Orin Nano 8GB in FP16 with 2× overhead (verified empirically) — no need to jump to Thor for most deployments.
+**Memory fit (monolithic ONNX on disk, FP32):** SmolVLA 1.6GB, pi0 12.5GB, pi0.5 ~14GB (v0.3), GR00T ~5GB (v0.3). SmolVLA fits comfortably on Orin Nano 8GB; **pi0 realistically needs Orin 16GB+ or a desktop NVIDIA GPU** — the 12.5GB monolithic ONNX cannot load on the 8GB Orin Nano even in FP16 (~6GB weights plus activations + OS). FP16 engine rebuild + Orin Nano fit work is tracked for v0.3.
 
 `reflex targets` lists current profiles.
 

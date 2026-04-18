@@ -31,7 +31,23 @@ Reproducible on a fresh clone with the linked script at the linked commit. These
 | 2026-04-18 | **pi0 native path** (`PI0Policy.predict_action_chunk` wrapper) vs raw `PI0Pytorch.sample_actions` on shared seeded inputs | **cos = 1.0000000000, max_abs = 0.000e+00 (bit-exact)** | `modal run scripts/modal_pi0_monolithic_export.py --native`. Verifies the PI0Policy wrapper's preprocessing (image norm + state pad + lang tokens) introduces no drift vs the raw forward that ONNX matches at cos=+1.0000000. Closes `multi-model-native-parity` for pi0 (pi0.5 + GR00T deferred to v0.3). | Modal run via `parity_native_pi0` function |
 | 2026-04-18 | **END-TO-END SmolVLA monolithic ONNX** (1.6GB total) vs PyTorch `SmolVLAPolicy.model.sample_actions(num_steps=1)` on shared inputs + seeded noise | **first-action cos = +1.0000000, max_abs = 1.55e-06; full-chunk cos = +1.0000000, max_abs = 3.34e-06** | `scripts/modal_smolvla_monolithic_export.py` via Modal A10G. Same onnx-diagnostic `torch_export_patches` pattern as pi0, with three additional fixes: (1) pin `transformers==5.3.0` exactly (5.4+ has q_length scalar regression in masking_utils that breaks onnx-diagnostic patches); (2) monkey-patch `torch.where` to explicit-cast mismatched-dtype branches (SmolVLM2 vision embeds do `torch.where(bool_mask, torch.full(fill_value=0), float_tensor)` which torch.export traces as mismatched int64/float32 inputs); (3) post-export ONNX pass that finds Where nodes with mismatched branches and inserts Cast nodes to match the declared output dtype — needed because torch.onnx sometimes lowers `index_put` to Where(bool, int64, float) even when the aten graph is clean. Output verified at cos=+1.0000000 on parity run 6. | Modal runs 1-13 (this session); parity run 14 verified |
 
+| 2026-04-18 | **pi0 CUDAExecutionProvider vs CPUExecutionProvider** on the monolithic ONNX — same seeded inputs, both providers via onnxruntime-gpu 1.20 | **cos = 0.99999994, max_abs = 8.74e-04, used_provider = CUDAExecutionProvider** | `modal run scripts/modal_pi0_monolithic_export.py --cuda` | confirms `reflex serve --device cuda` path runs the GPU kernels (not silently falls back to CPU). max_abs ~1e-03 reflects float32 kernel-level non-determinism between CPU and CUDA EPs, well inside the 0.999 cos threshold. | Modal runs ~15 (this session, launch-verification suite) |
+| 2026-04-18 | **SmolVLA CUDAExecutionProvider vs CPUExecutionProvider** on the monolithic ONNX — same seeded inputs | **cos = 0.99999961, max_abs = 1.19e-03, used_provider = CUDAExecutionProvider** | `modal run scripts/modal_smolvla_monolithic_export.py --cuda` | `reflex serve --device cuda` GPU path confirmed for SmolVLA. Same float32 CPU↔CUDA kernel noise profile as pi0. | Modal runs ~16 (launch-verification suite) |
+
 **Headline claim:** "Reflex's native + ONNX export paths match the reference PyTorch policy to cos = 1.0000 end-to-end on BOTH SmolVLA and pi0." The cross-framework moat claim is now load-bearing-ready.
+
+### Launch-verification (2026-04-18) — num_steps=1 vs num_steps=10 drift
+
+**Material quality gap — NOT a lossy approximation.** The monolithic ONNX bakes in num_steps=1; PyTorch's canonical num_steps=10 default is a different behavior. Customers comparing Reflex output against their PyTorch baseline should expect substantial drift:
+
+| Model | first-action cos | first-action max_abs | full-chunk cos | full-chunk max_abs | relative max_abs (first / action_range) |
+|---|---|---|---|---|---|
+| SmolVLA | 0.783553 | 5.78e-01 | 0.766007 | 1.14e+00 | **22%** |
+| pi0     | 0.897075 | 8.72e-01 | 0.890676 | 1.39e+00 | **45%** |
+
+**Interpretation:** num_steps=1 does a single large Euler step (`dt=-1.0` from `t=1` to `t=0`); num_steps=10 does 10 small steps that accurately integrate the learned velocity field. For launch, Reflex ships num_steps=1 (ONNX constraint — num_steps>1 hits a 835→886 shape expand bug under `torch.export`). The v0.3 upgrade path is either (a) fix the shape expand bug, (b) bake multiple fixed-N exports, or (c) implement a host-Python Euler loop that calls ONNX per step (requires per-step ONNX export, blocked on DynamicCache tracer). See `01_architecture/pi0_monolithic_wrap_pattern.md` for path analysis.
+
+**Launch framing:** every README / launch-draft / model-card prominently notes num_steps=1 + v0.3 roadmap for num_steps=10. Reproducers: `modal run scripts/modal_{smolvla,pi0}_monolithic_export.py --quality`.
 
 ---
 

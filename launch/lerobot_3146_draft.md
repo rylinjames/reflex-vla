@@ -51,7 +51,7 @@ Every export directory gets a `VERIFICATION.md` with sha256 of every file, ONNX 
 
 **In scope for v0.2:** SmolVLA + pi0 cos-verified ONNX, monolithic wrap (full `sample_actions` traced end-to-end), Docker image, ROS2 bridge, NaN/Inf kill-switch, auto-generated VERIFICATION.md.
 
-**Not in scope yet:** Jetson latency numbers — CloudJetson only has AGX Orin 64GB, Orin Nano is waitlisted; latency re-measurement on the monolithic path (earlier TRT FP16 tables were from a now-abandoned decomposed-ONNX path); pi0.5 AdaRMSNorm + GR00T AdaLN parity (v0.3 items).
+**Not in scope yet:** Jetson latency numbers — CloudJetson only has AGX Orin 64GB, Orin Nano is waitlisted; latency re-measurement on the monolithic path (earlier TRT FP16 tables were from a now-abandoned decomposed-ONNX path); pi0.5 AdaRMSNorm + GR00T AdaLN parity (v0.3 items). **Memory note:** pi0 monolithic ONNX is 12.5GB and does not fit on Orin Nano 8GB — SmolVLA (1.6GB) does. pi0 currently needs Orin 16GB+ or desktop GPU; FP16 engine rebuild for Orin Nano fit is v0.3.
 
 ### Asks
 

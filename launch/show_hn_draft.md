@@ -34,6 +34,7 @@ reflex serve ./smol --port 8000
 **What's explicitly NOT done:**
 - pi0.5 (AdaRMSNorm) and GR00T (DiT + AdaLN) ONNX parity — v0.3
 - Jetson latency numbers — CloudJetson has only AGX Orin 64GB available; Orin Nano waitlisted. Launch numbers are from Modal A10G; real Jetson data comes when someone runs `reflex bench` on a dev kit
+- **Orin Nano 8GB fit for pi0.** The pi0 monolithic ONNX is 12.5GB (FP32) and does not fit on Orin Nano 8GB in any precision once activations + OS are counted. SmolVLA (1.6GB) fits fine. pi0 realistically needs Orin 16GB+ or a desktop NVIDIA GPU. FP16 engine rebuild + Orin Nano fit is a v0.3 item
 - Earlier TRT FP16 latency tables were on a now-abandoned decomposed-ONNX path; latency re-measurement on the monolithic path is in v0.3
 
 Repo: https://github.com/rylinjames/reflex-vla

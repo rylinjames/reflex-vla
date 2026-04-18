@@ -40,6 +40,7 @@ Then `POST /act` returns flow-matching action chunks. Composable wedges let you 
 **Honest disclaimers:**
 - Alpha, single maintainer, Apache 2.0
 - Jetson Orin Nano numbers not yet published — CloudJetson waitlisted, Orin Nano dev kit not on hand. Launch latency data is from Modal A10G; real Jetson numbers land when someone runs `reflex bench` on a dev kit (happy to credit + thank-you gift)
+- **pi0's monolithic ONNX (12.5GB) doesn't fit on Orin Nano 8GB.** SmolVLA (1.6GB) does. pi0 currently wants Orin 16GB+ or desktop GPU; FP16 engine rebuild for Orin Nano fit is v0.3
 - pi0.5 (AdaRMSNorm) and GR00T (DiT + AdaLN) parity are v0.3 items — planned but not shipped
 - Earlier TRT FP16 latency tables were on a decomposed-ONNX path that's now abandoned; latency re-measurement on the monolithic path is a v0.3 item
 
