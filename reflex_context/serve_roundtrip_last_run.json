@@ -1,0 +1,20 @@
+{
+  "date": "2026-04-18",
+  "reproducer": "modal run scripts/modal_serve_roundtrip_test.py",
+  "models": {
+    "pi0": {
+      "passed": true,
+      "num_actions": 50,
+      "action_dim": 32,
+      "latency_ms": 15421.7,
+      "inference_mode": "pi0_onnx_monolithic",
+      "note": "Pi0OnnxServer.predict() end-to-end via production server class. 15.4s on Modal CPU — acceptable for gate; GPU serve latency is a separate measurement."
+    },
+    "smolvla": {
+      "passed": true,
+      "shape": [1, 50, 32],
+      "finite": true,
+      "note": "raw onnxruntime roundtrip only — SmolVLAOnnxServer class TBD (v0.3). ONNX artifact itself serves correctly."
+    }
+  }
+}
