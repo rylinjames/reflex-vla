@@ -77,6 +77,16 @@ Nothing autonomous unless you fire the loop. The product is launch-ready. Adding
 ### Step 3: Launch Explore Agent
 
 **YOU MUST DISPATCH AN EXPLORATION AGENT NOW.** Select the backend using...
+- selected_item = max(items, by=severity)  # highest severity first
+      log "All goals met. Picking harvested work: {selected_item.title}"
+      # Execute as an /rpi cycle (Step 4), then mark...
+- decision: whether to pursue two-container Modal, fork-and-freeze, vendor-docker, or skip sim entirely and position reflex as "deployment parity + latency"
+
+8. Current Work:
+   The most recent...
+- decision:**
+- **Option A expected value:** 30% × (moat + timely MVP) + 65% × (delayed MVP + sunk cost) + 5% × (abandon to option B)
+- **Option B expected value:** SmolVLA MVP shipped in 5–8w,...
 
 ## Knowledge
 - till listed as "highest ceiling, broadest TAM." It's neither in 2026. You can't build a billion-dollar company by being early to a market where the customers don't have revenue. Datadog didn't sell...
@@ -644,6 +654,389 @@ Or if you just want steps 1-3 without any coding at all, say **"run the research
 - till 8 agents, just sequenced correctly. Batch 1 ~5 min, batch 2 ~3 min, total ~8 min.
 
 Go?
+- tillation**
+- **xVLA (880M, tokenized head) is a new model family Reflex doesn't support**
+- **Jetson deployment is the #1 pain across all repos (3 separate openpi issues, 15+ comments each)**
+-...
+- till timing** — Revenue says ship it early (weight 9, headline Pro feature). Solo-founder says defer it entirely ("research project pretending to be engineering"). Robotics engineer says weight 5....
+- till timing
+
+**Solo-founder's objection was:** "2-week research project pretending to be engineering task." If you ship it in 3 days, that objection is gone.
+
+**Remaining objection:** "building for...
+- till` (already in your README as planned).
+
+Everything else maps to existing surfaces:
+
+| Goal | Where it lives | New command? |
+|---|---|---|
+| vlm-prefix-encoder | Internal to `reflex export`...
+- til everything passes.
+
+**Practical options:**
+
+- `/evolve --dry-run` — just measures and shows what's failing without coding anything. Good to verify GOALS.yaml is correct first.
+- `/evolve...
+- til kill switch or stagnation
+/evolve --max-cycles=5       # Cap at 5 improvement cycles
+/evolve --dry-run            # Measure fitness, show what would be worked on, don't execute
+```
+
+## Execution...
+- till-dmpo` (weight 9).
+
+The evolve loop would now continue to cycle 2 targeting `distill-dmpo`. That's the DMPO one-step generation recipe — a substantial research + implementation task.
+
+Want me...
+- till work with zeros
+
+## Use cases
+
+1. **Any user calling `/act` with an image + instruction** — instead of getting action-shaped noise, they get VLM-conditioned actions. The robot actually...
+- til the real VLM ships. Change the check to verify:
+- Output dim is 960 (not the stub's 512)
+- The exporter is NOT the stub (check for the real SigLIP forward, not `AdaptiveAvgPool2d`)
+
+That way...
+- till expects 512-dim, the ONNX session will crash with a shape mismatch. This is a mechanical fix that touches many files but is straightforward — find every hardcoded 512 in the VLM context and...
+- till-dmpo` (weight 9), then `stripe-license-gating` and `ros2-bridge` (both weight 8), and so on down the list.
+
+One goal per cycle, highest weight first. It won't skip ahead or work on multiple...
+- till work with dummy conditioning
+
+### Next `/evolve` cycle would target: `distill-dmpo` (weight 9)
+- till changes the action distribution. ROS2 bridge enables new test categories. The right test suite grows as the product grows.
+
+3. **Publishable numbers at every milestone.** After VLM prefix ships...
+- till fails — it's ORT CPU threading, not the tokenizer. Let me confirm by forcing single-threaded execution:
+- till a fallback path — the text embeddings are pseudo-random projections, not real SmolLM2 embeddings. Exporting `text_embedder.onnx` as part of the pipeline (Issue 2 in the plan) replaces this...
+- Fixed by seeding the RNG with the token IDs so the same instruction always produces the same embedding.
+
+**Note:** this is still a fallback path — the text embeddings are pseudo-random projections,...
+- till fails the tightened GOALS.yaml check (needs `AutoModel` in the exporter, which it has — but the text_embedder gap means actions aren't fully task-relevant yet).
+
+Want me to add it to...
+- till outstanding.
+
+**#2 (trajectory replay)** and **#3 (LIBERO-10)** both need Modal. #4 (visual inspection) I can do right now on this machine.
+
+Want me to:
+- Run **#4 (visual inspection)** now —...
+- till failing — the frames aren't being decoded. Let me add diagnostics to see what the dataset gives us:
+- till works because each instruction seeds a different deterministic embedding.
+
+Test #3 (LIBERO-10) is a separate project — requires `vla-eval` integration + MuJoCo on Modal. That's the "task...
+- till-dmpo` (weight 9) — implement DMPO one-step generation.
+
+**My recommendation:** ship `text-embedder-onnx` right now. It's the smallest possible goal (single Embedding layer export + wire into...
+- till pass and the GOALS.yaml check flips:
+- till-dmpo` (weight 9).
+
+But honestly — you now have a working VLM pipeline with real text embeddings. The highest-leverage thing you can do right now isn't another GOALS.yaml goal. It's:
+
+**Run...
+- till, ROS2, auth, guard) builds on top 
+  of a product that already has a published benchmark. Without the number,  
+  you're marketing architecture. With it, you're marketing results.           
+   ...
+- key insight: vla-eval uses WebSocket+msgpack, not HTTP. We need a thin adapter. Let me write the full Modal script.
+- till not importable despite being in the image build. Let me diagnose inside the container:
+- till isn't importable — the package likely has a non-standard install structure that `pip install` from git doesn't handle correctly.
+
+This has been 5 iterations of Modal debugging. Here's the...
+- till fails. Must be a `.pyc` cache or a 4th call. Let me nuke caches + add catch-all:
+- till `input()`. Let me dump the actual file contents to see what's there:
+- till-dmpo` — implement DMPO one-step generation (replaces pi-Flow). Research already done (arXiv 2601.20701). ~3-4 days of real work. Biggest speed moat but no user is asking for it...
+- till load correctly.
+
+No user should ever call `export_vlm_prefix()` directly. It should be internal.
+
+**Issue 1 (LIBERO number) — the root fix:**
+
+Don't hardcode a LIBERO-specific script. The...
+- till(planned)
+```
+
+Three pain points:
+
+**1. Three commands pretend to "validate" something:**
+- `check` — static pre-flight (file exists, dtype, NaN)
+- `validate` — ONNX-vs-PyTorch numerical...
+- till`.
+- till` into the CLI:
+- Fixed by renaming in vlm_orchestrator.py line 243.
+   
+   - ONNX sessions never closed: Added `close()` method to VLMPrefixOrchestrator + `__del__`.
+   
+   - Text encoding non-determinism (max_diff...
+- till command (DMPO recipe). User explicitly stated "don't give me distribution things to do now" — wants build-only work.
+
+2. Key Technical Concepts:
+   - Vision-Language-Action (VLA) models:...
+- till --recipe dmpo|pi_flow` scaffolds are in place, training loop ships in v0.2.1
+
+42 tests pass. Fitness: 4/15 GOALS.yaml items. What's next?
+- till feeds zeros. That's the next build task if you want a non-zero LIBERO number.
+
+Want me to (a) wire the adapter to actually use the VLM prefix ONNX files, or (b) check if a LIBERO-fine-tuned...
+- The fix is to make the vla-eval adapter a thin wrapper around `ReflexServer` instead of a parallel reimplementation.
+
+Let me look at what vla-eval's `PredictModelServer` expects and the current...
+- till needs to happen for a non-zero LIBERO number:**
+1. A LIBERO-fine-tuned SmolVLA checkpoint (base isn't trained on it)
+2. Ship it to Modal and run — takes ~30 min on A10G
+
+Config knobs via env...
+- till needs to happen for a non-zero LIBERO number:                    
+  1. A LIBERO-fine-tuned SmolVLA checkpoint (base isn't trained on it)      
+  2. Ship it to Modal and run — takes ~30 min on...
+- tils` (old python2/3 compat lib) which isn't installed. Easy fix.
+- fixed by CLI Step 1)
+- Run #2 — killed (requirements.txt nuked stack)
+- Run #3 — missing cmake for egl_probe
+- Run #4 — bddl/future/gym cascade
+- Run #5 (now) — proper readiness polling, up...
+- till running. Here's the deal:
+
+- Container is on Modal (A10G) doing the sim loop
+- `subprocess.run(capture_output=True)` in the Modal function **buffers all vla-eval stdout/stderr until the command...
+- til it completes. No errors yet. Scheduled wakeup will fire at 00:21 with final results.
+- till no sim output emitted (output is buffered by `capture_output=True`). Task is alive on Modal, has been running ~37 min. 100-episode LIBERO typically takes 30–45 min. Checking again in 15 min.
+- till completion) AND dropping to 2 eps/task for faster iteration. Then we can see where it's getting stuck.
+- till present, so eval still works)
+
+Letting it run. Scheduling next check at 10 min mark for first episode completion.
+- till running on Modal (detached). Local bash task finished because `modal run --detach` returns immediately. Each episode takes ~3 min; at 20 eps that's ~60 min total. Will check in 20 min.
+- till pass
+- till pass
+
+4. **Next**: when the current run completes (~12 min), I kick off a new Modal run with the normalizer fix. If it produces a non-zero task success, we've proven end-to-end: LIBERO-tuned...
+- till FAIL on first 2 eps. Need to see if normalizer is actually loaded. Let me stop and add a diagnostic dump.
+- til diagnostic output lands.
+- till wrong — let me see episode results + that traceback.
+- till FAIL at 150 steps even with normalizer active. Normalizer alone isn't enough — something else is wrong:
+
+- Model trained on cameras keyed `camera1/2/3` at 256×256. We pick "first camera"...
+- till FAIL at 150 steps.
+- Normalizer IS loaded (confirmed from adapter startup log — all 4 stats, VLM complete, `norm=on`)
+
+**Likely root cause of 0%**: vla-eval's LIBERO benchmark sends **1...
+- till fails in sim). |
+| **B. Multi-layer vlm_kv re-export** | 2–3 days | High | Closer to real model; probably lifts LIBERO score. But complex ONNX work, might not stabilize on first try. |
+| **C....
+- til verdict.
+- till in the middle of first episode. Adapter log confirms `vlm=on, norm=on` (VLM orchestrator loaded complete=True). No traceback/failure. If the 5D fix worked, this first episode is the first one...
+- till 0% after 5 episodes even with 5D fix. The 5D fix WAS real (VLM would have been dummy before) but didn't move the needle. Something else is broken.
+
+Stopping this run and going back to the...
+- till 0% at ep0. Let me stop and add action-output diagnostics so we can see the ACTUAL numbers being sent to LIBERO (magnitudes, per-dim).
+- till in export (just started). Scheduled check at 05:00 will catch first episode's diagnostic dump.
+- till wrong.
+- till in the air. After that we should stop and decide on direction.
+
+Three realistic reads:
+
+1. **Something numerically subtle in the ONNX graph** — e.g., opset 19 vs training's native PyTorch ops,...
+- till 0% even with state + wrist. Adapter dump only lands after run completes, ~10 min more.
+- till in-distribution. But 0%.
+
+Noticed one more thing: obs has BOTH `states` AND `controller_states`. Model may have been trained on `controller_states` (robot controller's output) not `states` (raw...
+- till 0%, we've exhausted the obvious tweaks and should ship what's working + document.
+- till 0%. We've exhausted obvious tweaks while infrastructure runs end-to-end. Let me wait for the final diagnostic dump (~2 min) then talk through what to do.
+- till differs from the real model and we can't isolate without PyTorch-ref diff (earlier attempt hit lerobot API version issues).
+- til you decide to avoid burning more Modal $ on speculation.
+- til you do the current task and get success with this test, but i only want long term fixes
+- till 0% even with RoPE + split k/v. Infrastructure runs clean, something subtler wrong. Killing and doing the real long-term fix: **PyTorch-vs-ONNX diff test** — fixing the API to actually work.
+- till building image. Wakeup at 08:46 will catch episodes.
+- till all FAIL with multi-camera. Episodes take ~4-5 min each now (2 images = 2 vision_encoder calls). 6 more episodes ≈ 25 more min.
+
+Digging into real...
+- till getting 0% means there's ONE more thing — but I have 30+ candidates and no way to rank them without direct comparison.
+
+**The fundamental problem**: task-success is an integration test. ONE...
+- till produces plausible text-conditioned chunks) but never solving tasks (no state info = no grasp targeting).
+
+Fixing now.
+- till MAJOR divergence but moving in the right direction.
+
+Let me look at how `prepare_images` normalizes images in real PyTorch vs our path — likely another mismatch.
+- till mid-export. Scheduled wakeup will catch final result.
+- till failing
+- till diverges to 0.08 cos. This is surprising and points to a SYSTEMIC issue we haven't localized yet.
+
+Data I have:
+- Vision: cos=1.0000 ✓
+- Text: cos=1.0000 ✓  
+- State proj: cos=1.0000 ✓
+-...
+- till `cos=-0.27`. Scaling helped per-layer kv match but end-to-end is still wrong. Let me isolate the expert specifically — compare expert output given known VLM k/v.
+- till ~0.98 per-step / -0.24 final after rope_theta fix. Velocity has 20% magnitude error + sign flips on dims 2 and 6 (gripper). Integrating over 10 steps destroys the trajectory.
+
+**Honest...
+- TILL need decomposed RMSNorm. But **only RMSNorm** — torch.onnx.export handles attention, RoPE, GQA, etc. cleanly.
+
+## Can we use PyTorch + apply lessons learned?
+
+**Yes, and this is the smart...
+- till there (`modal app list`). Each has logs via `modal app logs <app_id>`. ~15 runs total.
+2. **Background task output files** — `/private/tmp/claude-501/-Users-romirjain/.../tasks/*.output` —...
+- the fix was (commit hash or diff)
+   - Whether verified via local test
+6. **Write the session log** (`05_sessions/2026-04-17_libero_hunt.md`) as the narrative glue.
+
+**Time estimate:** 60-90 min of...
+- til you have gona over everything
+- till / TRT builds).
+4. **Keep `reflex export` decomposed** for now — ONNX file exports are still useful for Jetson. The native path just provides a correctness-first runtime that actually solves...
+- till rebuilding — installing lerobot triggered torch/huggingface-hub downgrades. Will take ~5 min to finish image, then ~2 min export, then 30 min sim. Wakeup scheduled for 14:11.
+- till missing libero module despite reordering. The `-e` (editable) install is getting invalidated by subsequent `pip install -e reflex-vla`. Let me switch LIBERO to non-editable install.
+- till an hour of engineering right now
+
+## 2. Lerobot builtin eval (~30 min if it exists)
+
+**Pros**
+- Simplest: one command, handled by upstream maintainers
+- Matches how end-users would actually...
+- till fails on pip version mismatch
+
+**Root issue:** LIBERO is a research codebase from 2023, lerobot is a 2026 codebase with modern pins. Forcing them into one env is fighting the whole Python...
+- till has the dep problem inside the Jetson's Python env
+
+## Honest recommendation
+
+**Option B (trajectory replay on lerobot/libero dataset).** Why:
+
+1. **Zero container pain.** Runs locally, same env...
+- til benchmark dies |
+| **Modal image building semantics** | Modal updates their platform frequently (saw this this session — `modal app logs` flag changes) | Pin `modal>=1.4,<1.5`. Watch release...
+- till be world-class:
+1. **Position reflex as "deployment parity + speedup" — NOT "task success on sim"**
+2. **Skip LIBERO responsibility entirely.** Users who want LIBERO numbers can install...
+- Fixed by forcing manual preprocess always.
+   - **State_proj random weights**: CLI didn't save from checkpoint. Fixed by explicit np.save of state_proj.weight/bias from state_dict.
+   - **Fine-tuned...
+- till 0%, user said "dont stop until you have success with this test, but i only want long term fixes"
+   - Pivot: user directed "copy someone's code we know works, and improve from there" — leading...
+- till inherits C++/cmake/egl_probe fragility, users still need MuJoCo+EGL on their box, arm64/driver differences still bite, you become the upstream patcher
+
+**Option 2 — Vendor Docker image...
+- till leads with "deploy VLAs faster" — generic. New lead: "Bit-exact export parity with PyTorch (cos=1.0000), verified per-stage." 30 min.
+
+3. **Get a second real number — Jetson latency.** This...
+- till leads with "deploy VLAs faster" —
+   generic. New lead: "Bit-exact export parity with PyTorch (cos=1.0000),
+  verified per-stage." 30 min.   4. Archive the LIBERO Modal scripts. You already...
+- till work.
+
+**Step 6 — GOALS.yaml check (no code):**
+
+**Calibration is NOT in GOALS.yaml.** Zero matches for `calibration`, `ECE`, `Brier`, `NLL`, or `confidence` across all 15 goals / 90 lines....
+- till reports `cos=+1.000`. Same spirit as the old regression gate (don't silently regress the core claim), but now tracks the one load-bearing number instead of a sim proxy.
+
+**Added...
+- till-dmpo` — one-step generation at 1000+ Hz. The speed moat beyond TRT FP16.
+
+**Weight 8 — HIGH ("adoption-blocking commercial features")**
+- `stripe-license-gating` — Pro tier revenue gate.
+-...
+- till-dmpo` (9) — one-step flow matching @ 1000+ Hz
+- `adaptive-denoise-fix` (5) — 58% step savings on pi0
+- `xvla-exporter` (7), `openvla-exporter` (4) — broader model zoo
+- Plus the existing...
+- till-dmpo (Leg B's moat piece)
+  3. Ship ros2-bridge + calibration-metrics (Leg C's moat pieces)    and are these properly ranked in goals.yaml, and what else can i do to make this toal better than...
+- till-dmpo` (9).** That ordering is *correct* for today's state — both 10-weights are foundational (can't have parity without them) and distill is the Leg B piece. After those land, the ordering...
+- till-dmpo`, `multi-model-native-parity`, `jetson-benchmark-ci` (all 9).
+
+---
+
+## Glossary — every term, plain English
+
+### Models
+
+- **VLA (Vision-Language-Action model)** — a neural network that...
+- tillation (distill-dmpo) — wow-factor feature, not a deal-blocker      
+  - Calibration — differentiator for v0.3                               
+  - GR00T, pi0.5, xVLA, OpenVLA support — one...
+- till hand-roll the serve layer. Isaac ROS has beautiful ROS2 integration but is NVIDIA-model-only (GR00T), not cross-framework. **Reflex's diff:** ROS2 action server wrapping a verified ONNX/TRT...
+- till-dmpo` | Leg B moat |
+| 9 | `multi-model-native-parity` | Leg A moat (4× coverage) |
+| 9 | `jetson-benchmark-ci` | Leg B moat (per-commit proof) |
+| 8 | `ros2-bridge` | Leg C moat (real-robot...
+- till loose (not blocking but worth doing before MVP):**
+- No pytest test wrapping the check — /evolve runs the bash check but CI doesn't have a proper test
+- No GitHub Action wiring (covered by...
+- till empty (0 bytes), so it's in the HF download phase before any prints fire. Nothing's failed yet; just slow.
+
+**What I did while you were away:**
+1. Created task #35 (pi0 parity).
+2. Inspected...
+- till 0 bytes (first print only fires after `PI0Policy.from_pretrained` returns, i.e. after download finishes + model loads from safetensors)
+
+**ETA:** ~2–3 more min download + ~30–60s safetensors...
+- till alive, sleeping on I/O. No prints yet.
+
+**Note:** I was wrong earlier — pi0_base is ~9 GB (one shard), not ~7 GB. It's a 3.5B-param PaliGemma + expert in fp32 safetensors.
+
+Once download...
+- till one `.incomplete` blob. pi0_base in fp32 = ~14 GB (3.5B × 4 bytes), so we're at ~85%. Maybe 3–4 more min of download at this rate. Then load + forward pass.
+
+Process healthy (CPU 6%, sleeping...
+- til EOF — so the output file won't show *any* prints until the script exits. Monitor will fire all prints in one burst at the end. Intermediate progress invisible, but process is clearly alive and...
+- till buffered by `| tail -30`).
+
+Going to be patient — pi0 on CPU is slow. Maybe another 5–10 min. Will stop polling manually; Monitor will push the burst when it exits.
+- til then.
+- til re-verified.**
+
+**What's in GOALS.yaml:**
+
+Only ONE goal touches cross-model ONNX parity, and it's **ambiguous:**
+
+```yaml
+- id: multi-model-native-parity (weight 9)
+  description: "Native export...
+- till-dmpo`, `multi-model-native-parity`, `pi0-onnx-parity`, and `jetson-benchmark-ci`. Want to tackle `jetson-benchmark-ci` next (order Amazon-return Orin Nano + community bounty gist) or...
+- till unmeasured
+- CPU iteration is still slow (~10–20 min per diff cycle)
+
+**Still a 50/50 bet.** Better than 30/70, but not a lock.
+
+Want me to proceed with the 3-step import strategy for...
+- til license is clear |
+| Day 7+ | Parity diff against Tacoin's ONNX + real PyTorch pi0 reference |
+| Week 2+ | Bug hunt using diagnostic ladder from SmolVLA experience |
+
+**My recommendation: commit...
+- till first to pi0-on-Orin-Nano — `openpi_on_thor` targets Thor FP8, not Orin FP16. Irreducible risk from unknown-unknowns in that gap.
+
+**2. 3 things I was about to get wrong that would have cost...
+- til Day 2 completes.
+- till armed on all 3 tasks. I'll notify when SigLIP finishes or anything else breaks.
+- till converting (925MB RSS, low CPU — I/O-bound, ~2+ min in) |
+| Gemma-2b retry | 🟢 Just kicked off with new monitor |
+| Tacoin oracle | 🟢 Still downloading |
+
+All 3 monitors armed. Will push...
+- til downloads finish — total combined ~10GB, ~5–10 min depending on HF mirror speed.
+- till downloading. Main weight shard incoming. Monitor will push next 30s tick or on done.
+- till progressing — big shard went 1476 → 1540MB (+64MB in 60s). CPU 2.2%, healthy. Small shard stuck at 64MB but that might be a completed-but-not-renamed file. ~8 min more on main shard.
+- till armed.
+- till ≥ 0.9999. If yes → committing to the pi0-onnx-parity implementation plan.
+
+This side-steps the xet-bridge mess entirely. Standing by.
+- till <5e-5)
+- ✅ cos ≥ 0.9999 with comfortable headroom
+- til done. I'll push when it finishes.
+- till 28G. Optimum validation phase (loading 11GB ONNX back + running inference for parity check). Takes a couple min on CPU. Standing by.
+- till running after 5:35 elapsed — 40% CPU, 10.4GB RSS, active state. Optimum Gemma export is in the validation phase (load ONNX back + run inference to verify). Expected 6-8 min total. Standing...
+- till writing Gemma external data. ~30s–60s more.
+- till going. Total 25G matches sum of all components.
+- till running...</event>
+If this event is something the user would act on now, send a PushNotification. Routine or benign output doesn't need one.
+</task-notification>
+- till running. Standing by.
+- till running. 2.51B Gemma denoise loop on CPU is slow by nature. Expect another 5–10 min.
 
 ## Files Changed
 - `/Users/romirjain/Desktop/building projects/axion_compute/inferscope-rylinjames/improvements/INDEX.md`
@@ -937,6 +1330,75 @@ Go?
 - `/Users/romirjain/Desktop/building projects/reflex-vla/.agents/rpi/phase-6-summary-2026-04-16-reflex-validate.md`
 - `/Users/romirjain/.agents/skills/evolve/references/goals-schema.md`
 - `/Users/romirjain/.claude/skills/evolve/SKILL.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/02_research/2026-04-16-goals-research.md`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/GOALS.yaml`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/.agents/research/2026-04-16-vlm-prefix-encoder.md`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/.agents/rpi/phase-1-summary-2026-04-16-vlm-prefix.md`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/.agents/plans/2026-04-16-vlm-prefix-encoder.md`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/.agents/rpi/phase-2-summary-2026-04-16-vlm-prefix.md`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/exporters/vlm_prefix_exporter.py`
+- `/Users/romirjain/Desktop/building projects/reflex_context/02_research/2026-04-16-vlm-real-export.md`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/.agents/plans/2026-04-16-vlm-real-forward.md`
+- `/Users/romirjain/Desktop/building projects/reflex_context/02_research/2026-04-16-vlm-issue-research.md`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/runtime/vlm_orchestrator.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/_onnx_backend.py`
+- `/Users/romirjain/Desktop/building projects/reflex_context/02_research/2026-04-16-hardware-alternatives.md`
+- `/private/tmp/claude-501/-Users-romirjain/8b9b9bce-0418-4c8d-bfac-422a08d97dac/tasks/bg22h0cdn.output`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/modal_trajectory_replay.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/modal_libero10.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/patch_libero.py`
+- `/private/tmp/claude-501/-Users-romirjain/8b9b9bce-0418-4c8d-bfac-422a08d97dac/tasks/b06vrqfbk.output`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/eval/__init__.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/eval/libero.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/eval/simpler.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/eval/maniskill.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/distill/__init__.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/distill/dmpo.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/distill/pi_flow.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/runtime/adapters/__init__.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/runtime/adapters/vla_eval.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/tests/test_vla_eval_adapter.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/exporters`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/tests/test_vlm_prefix.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/modal_pytorch_vs_onnx.py`
+- `/tmp/lerobot-src/src/lerobot/policies/smolvla/processor_smolvla.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/exporters/vlm_components.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/modal_stage_diff.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/local_stage_diff.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/local_full_diff.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/local_expert_diff.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/local_single_layer_diff.py`
+- `/Users/romirjain/.claude/projects/-Users-romirjain/memory/project_reflex_vla_inference_bugs.md`
+- `/tmp/commit_msg_kb.txt`
+- `/tmp/commit_msg_fixes.txt`
+- `/tmp/commit_msg_scripts.txt`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/runtime/smolvla_native.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/reflex_context`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/reflex_context/README.md`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/reflex_context/measured_numbers.md`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/archive/README.md`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/.venv/lib/python3.13/site-packages/lerobot/policies/groot/__init__.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/.venv/lib/python3.13/site-packages/lerobot/policies/groot/groot_n1.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/.venv/lib/python3.13/site-packages/lerobot/policies/pi0/modeling_pi0.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/.venv/lib/python3.13/site-packages/transformers/models/gemma/modeling_gemma.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/local_pi0_rmsnorm_swap_diff.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/local_pi0_inspect_norms.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/.venv/lib/python3.13/site-packages/lerobot/policies/pi_gemma.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/reflex_context/01_architecture/pi0_rmsnorm_already_decomposed.md`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/reflex_context/mvp_queue.md`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/reflex_context/03_research/pi0_onnx_importable_sources.md`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/reflex_context/03_research/pi0_empirical_derisk_plan.md`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/reflex_context/03_research/pi0_empirical_derisk_findings.md`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/local_tiny_gemma_sanity.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/local_pi0_gemma_parity.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/local_pi0_siglip_parity.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/exporters/pi0_prefix_exporter.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/local_pi0_prefix_smoke.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/src/reflex/runtime/pi0_onnx_server.py`
+- `/Users/romirjain/Desktop/building projects/reflex-vla/scripts/local_full_diff_pi0.py`
 
 ## Issues
 - `re-add`
@@ -1311,27 +1773,127 @@ Go?
 - `by-goal`
 - `rtc-flag`
 - `no-brainer`
+- `of-the-art`
+- `vlm-prefix`
+- `vs-fire`
+- `nan-guard-hardening`
+- `api-key-auth`
+- `nan-guard`
+- `get-url`
+- `re-loop`
+- `pre-cycle`
+- `no-edit`
+- `re-enable`
+- `re-loops`
+- `to-ship`
+- `sub-models`
+- `vlm-real-forward`
+- `of-memory`
+- `num-cases`
+- `of-life`
+- `sim-smoke-test`
+- `to-step`
+- `re-export`
+- `no-docker`
+- `sub-graphs`
+- `mid-run`
+- `per-line`
+- `in-process`
+- `mid-first-episode`
+- `per-run`
+- `by-frame`
+- `per-sample`
+- `un-rotated`
+- `two-output`
+- `sub-patches`
+- `mid-export`
+- `by-stage`
+- `vlm-weights`
+- `end-reader`
+- `bit-rot`
+- `vs-onnx`
+- `per-bug`
+- `per-script`
+- `per-app`
+- `in-line`
+- `pre-init`
+- `re-install`
+- `end-users`
+- `obs-routing`
+- `per-hour`
+- `to-publish`
+- `non-sim`
+- `pre-baked`
+- `sub-5ms`
+- `bit-match`
+- `hf-xet`
+- `and-freeze`
+- `dep-stable`
+- `yak-shaving`
+- `pre-native-pivot`
+- `sim-archive`
+- `re-rank`
+- `re-weight`
+- `per-commit`
+- `dev-tool`
+- `re-compute`
+- `re-train`
+- `wow-factor`
+- `bit-for-bit`
+- `by-model-every`
+- `of-stack`
+- `kv-cache-reuse`
+- `we-use`
+- `cos-parity`
+- `mid-stream`
+- `or-break`
+- `re-work`
+- `yak-shave`
+- `de-risk`
+- `new-code`
+- `by-piece`
+- `bug-hunting`
+- `and-error`
+- `pi-zero`
+- `re-impl`
+- `de-risked`
+- `pre-work`
+- `re-arm`
+- `xet-bridge`
+- `by-week`
+- `but-not-renamed`
+- `kv-head`
+- `re-scope`
+- `low-risk`
+- `mid-trace`
+- `end-state`
+- `pre-softmax`
+- `up-front`
 
 ## Tool Usage
 
 | Tool | Count |
 |------|-------|
-| Agent | 144 |
+| Agent | 204 |
 | AskUserQuestion | 1 |
-| Bash | 582 |
-| Edit | 212 |
+| Bash | 1307 |
+| Edit | 453 |
 | ExitPlanMode | 2 |
-| Glob | 2 |
-| Grep | 5 |
-| Read | 158 |
-| ScheduleWakeup | 32 |
-| Skill | 6 |
-| TaskCreate | 7 |
-| TaskUpdate | 24 |
-| ToolSearch | 11 |
-| WebFetch | 20 |
-| Write | 272 |
+| Glob | 4 |
+| Grep | 15 |
+| Monitor | 14 |
+| Read | 268 |
+| ScheduleWakeup | 94 |
+| Skill | 7 |
+| TaskCreate | 52 |
+| TaskStop | 5 |
+| TaskUpdate | 117 |
+| ToolSearch | 20 |
+| WebFetch | 39 |
+| Write | 326 |
 | mcp__basic-memory__recent_activity | 1 |
+| mcp__hf-mcp-server__hub_repo_details | 2 |
+| mcp__hf-mcp-server__hub_repo_search | 2 |
 | mcp__local-rag__ingest_data | 1 |
 | mcp__local-rag__query_documents | 1 |
 | mcp__local-rag__status | 2 |
@@ -1340,4 +1902,4 @@ Go?
 
 - **Input:** 0
 - **Output:** 0
-- **Total:** ~8792986 (estimated)
+- **Total:** ~16714045 (estimated)
