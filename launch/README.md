@@ -20,10 +20,15 @@ Don't post all three the same day — reduces signal in each, and means you can'
 
 ## Pre-launch checklist
 
-- [ ] All current Phase I + II + III work pushed to github.com/rylinjames/reflex-vla
-- [ ] README.md current with TRT FP16 numbers
-- [ ] Roadmap repo current with the same numbers (single source of truth)
-- [ ] At least one Jetson benchmark run (or honest "untested on Jetson" disclaimer)
-- [ ] GitHub Issues open and you commit to <24h response
-- [ ] Discord invite or Slack-channel link in the README
-- [ ] `pip install ... @ git+https://...` install path tested on a fresh box
+- [x] SmolVLA + pi0 ONNX parity verified at cos=+1.0000000 (2026-04-18)
+- [x] pi0 native-path parity verified bit-exact (2026-04-18)
+- [x] README.md reframed around verified cos parity (not unverified TRT numbers)
+- [x] Docker workflow landed — `git tag v0.2.0 && git push --tags` publishes to GHCR
+- [x] ROS2 bridge shipped (`reflex ros2-serve`)
+- [x] Safety kill-switch + NaN/Inf guard shipped
+- [x] Auto-generated `VERIFICATION.md` receipt per export dir
+- [ ] **Jetson benchmark** — explicitly deferred to v0.3. Launch pitch reframes around A10G + Docker; Orin Nano numbers land when community / first customer runs them.
+- [ ] Tag `v0.2.0` + push → CI publishes `ghcr.io/rylinjames/reflex-vla:0.2.0` + `:latest`
+- [ ] `pip install ... @ git+https://...` install path re-tested on a fresh Mac + Linux box
+- [ ] GitHub Issues open + <24h response commitment set in profile
+- [ ] (Optional) Discord or Slack link added to README

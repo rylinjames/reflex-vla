@@ -4,74 +4,61 @@
 
 ---
 
-## Draft v1 — to be posted as a comment on issue #3146
+## Draft v2 — to be posted as a comment on issue #3146
 
 Hi all — picking this up from the outside.
 
-I've spent the last few weeks building a standalone export + serve toolchain for flow-matching VLAs. It's open source under Apache 2.0 and currently covers four families:
+I've been building a standalone export + serve toolchain for flow-matching VLAs. Apache 2.0, single maintainer. Focused on the two most-used LeRobot models:
 
-| Model | HF ID | Status |
+| Model | HF ID | ONNX status |
 |---|---|---|
-| SmolVLA | `lerobot/smolvla_base` | ✅ ONNX export, validated max_diff 3.3e-06 |
-| pi0 | `lerobot/pi0_base` | ✅ ONNX, max_diff 6.0e-08 |
-| pi0.5 | `lerobot/pi05_base` | ✅ ONNX + AdaRMSNorm decomposition, max_diff 2.5e-06 |
-| GR00T N1.6 | `nvidia/GR00T-N1.6-3B` | ✅ ONNX + DiT/AdaLN + per-embodiment encoder/decoder, max_diff 3.8e-06 |
+| SmolVLA | `lerobot/smolvla_base` | ✅ cos=+1.0000000 vs PyTorch, max_abs 1.55e-06 |
+| pi0 | `lerobot/pi0_base` | ✅ cos=+1.0000000 vs PyTorch, max_abs 1.43e-06 |
+| pi0.5 | `lerobot/pi05_base` | 🟡 v0.3 (AdaRMSNorm decomposition ready, parity verification pending) |
+| GR00T N1.6 | `nvidia/GR00T-N1.6-3B` | 🟡 v0.3 (DiT + AdaLN, harder) |
 
 Repo: https://github.com/rylinjames/reflex-vla
 
-### Performance
+### What's actually verified
 
-Modal A10G benchmark (closest cloud GPU to Jetson Orin Ampere). Per single denoising step in ms:
+Monolithic `torch.export` → `torch.onnx.export` path matches the reference `{PI0,SmolVLA}Pytorch.sample_actions(num_steps=1)` forward to machine precision on shared seeded inputs:
 
-| Model | Params | `torch.compile` | ORT-GPU FP32 | **TensorRT FP16** | TRT speedup |
-|---|---|---|---|---|---|
-| SmolVLA | 99.8M | 3.06 | 3.26 | **0.95** | 3.2× |
-| pi0 | 314.6M | 6.23 | 5.53 | **1.94** | 3.2× |
-| pi0.5 | 426.9M | 7.34 | 7.37 | **2.24** | 3.3× |
-| GR00T N1.6 | 1091.7M | 14.61 | 14.45 | **5.59** | 2.6× |
+- **SmolVLA monolithic ONNX**: first-action cos=+1.0000000, max_abs=1.55e-06; full-chunk cos=+1.0000000, max_abs=3.34e-06
+- **pi0 monolithic ONNX** (12.5GB, Gemma-2b backbone + Gemma-300m expert): first-action cos=+1.0000000, max_abs=1.43e-06; full-chunk cos=+1.0000000, max_abs=2.98e-06
+- **pi0 native path**: `PI0Policy.predict_action_chunk` wrapper vs raw `sample_actions` = bit-exact (max_abs = 0.0)
 
-End-to-end via `reflex bench` (full 10-step denoise loop, what users actually get):
-
-| Model | per-chunk | effective Hz |
-|---|---|---|
-| SmolVLA | 11.7 ms | 86 Hz |
-| pi0 | 23.6 ms | 42 Hz |
-| pi0.5 | 27.1 ms | 37 Hz |
-| GR00T | 56.6 ms | 18 Hz |
-
-SmolVLA / pi0 / pi0.5 sit comfortably above 20-30 Hz robot-control targets. GR00T at 18 Hz is borderline. Same ONNX → TRT pipeline runs on Jetson — no separate cloud vs edge model variant.
-
-For fleet operators: `reflex serve --max-batch N` does continuous HTTP batching. With pi0 on A10G and 32 concurrent /act requests, throughput scales 2.34× at batch=4, 2.73× at batch=8, 2.88× at batch=16. Per-request latency drops too because requests no longer serialize through the model.
-
-Methodology + raw data + reproducer: https://github.com/rylinjames/vla_to_hardware_roadmap/blob/main/phase_1_vla_software/deployment_export/build_candidates.md
+Exporter uses onnx-diagnostic's `torch_export_patches(patch_transformers=True)` under `transformers==5.3.0` (5.4+ has a `q_length` scalar regression in `masking_utils.sdpa_mask`). Reproducers are `scripts/modal_{pi0,smolvla}_monolithic_export.py --parity`.
 
 ### How to try it
 
 ```bash
+# HTTP serve
 pip install 'reflex-vla[serve,gpu] @ git+https://github.com/rylinjames/reflex-vla'
-reflex export lerobot/pi0_base --target orin-nano --output ./p0
-reflex serve ./p0 --port 8000
+reflex export lerobot/smolvla_base --target desktop --output ./smol
+reflex serve ./smol --port 8000
+
+# Docker
+docker run --gpus all -v $(pwd)/smol:/exports -p 8000:8000 \
+  ghcr.io/rylinjames/reflex-vla:latest
+
+# ROS2 (after sourcing ROS2 humble/iron/jazzy)
+reflex ros2-serve ./smol --rate-hz 20
 ```
 
-`reflex serve` auto-prefers the TensorRT execution provider when ONNX Runtime ships with it (v1.20+), so on a GPU box you get TRT FP16 latencies with no engine-management commands. First serve invocation warms up + caches the engine in `<export_dir>/.trt_cache` (~30-90s); subsequent starts are ~1-2s. Verified end-to-end on a fresh A10G install: `inference_mode: "onnx_trt_fp16"`, `latency_ms: 11.9` on smolvla per chunk.
-
-```bash
-curl -X POST http://localhost:8000/act -H 'content-type: application/json' \
-  -d '{"instruction":"reach", "state":[0.1, 0.2, 0.3, 0.4, 0.5, 0.6]}'
-```
+Every export directory gets a `VERIFICATION.md` with sha256 of every file, ONNX opset, and (after `reflex validate`) per-fixture cos/L2 numbers.
 
 ### What's in scope vs not
 
-**In scope for v0.1:** the action-expert (denoising loop) export + a FastAPI serve layer with composable wedges (`--safety-config`, `--adaptive-steps`, `--cloud-fallback`, `--deadline-ms`, `--max-batch`).
+**In scope for v0.2:** SmolVLA + pi0 cos-verified ONNX, monolithic wrap (full `sample_actions` traced end-to-end), Docker image, ROS2 bridge, NaN/Inf kill-switch, auto-generated VERIFICATION.md.
 
-**Not in scope yet:** VLM prefix encoding inside the exported graph — the current ONNX runs the action expert with random conditioning. Adding the VLM prefix is the obvious next milestone but it's a much bigger lift (needs SigLIP/PaliGemma/Qwen3 encoder decomposition); doing that right is what's holding up the 0.2 release.
+**Not in scope yet:** Jetson latency numbers — CloudJetson only has AGX Orin 64GB, Orin Nano is waitlisted; latency re-measurement on the monolithic path (earlier TRT FP16 tables were from a now-abandoned decomposed-ONNX path); pi0.5 AdaRMSNorm + GR00T AdaLN parity (v0.3 items).
 
 ### Asks
 
-1. **Testers welcome.** If you're deploying a VLA to a Jetson or any edge box, install and tell me what breaks. Open an issue on the reflex-vla repo, I respond fast.
-2. **Looking for someone with a Jetson Orin Nano dev kit** to run a 30-min benchmark on real hardware and confirm the cloud-A10G → Jetson latency ratio holds.
-3. **Architectural feedback** on how this should sit relative to LeRobot's own deployment story — happy to upstream any subset that fits, or stay separate, whichever the LeRobot maintainers prefer.
+1. **Testers welcome.** Install it, point at your robot, open issues. Response time <24h.
+2. **Jetson Orin Nano benchmark contributor.** If you've got a dev kit and 30 min, I'd love a real-hardware latency number. Will credit + send a small thank-you.
+3. **Architectural feedback.** Happy to upstream subsets into LeRobot if maintainers want, or stay separate — whichever fits best.
 
-Honest disclaimer: this is alpha, single maintainer, no funding. If it works for you, great; if it doesn't, please tell me how it broke so I can fix it.
+Honest disclaimer: alpha, single maintainer, no funding. If it works for you, great; if not, please tell me how it broke.
 
 — @rylinjames

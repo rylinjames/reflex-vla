@@ -164,35 +164,24 @@ Each wedge works standalone for scripting, and every wedge that belongs in the i
 
 ## What Reflex is and isn't
 
-**Is:** the deployment layer between a trained VLA and a real robot. Cross-framework export (4 VLA families covered), composable runtime (serve + safety + turbo + split), Jetson-first.
+**Is:** the deployment layer between a trained VLA and a real robot. Cross-framework export (SmolVLA + pi0 verified at cos=+1.0000000, pi0.5/GR00T in v0.3), composable runtime (serve + safety + turbo + split), edge-first design targeting Jetson + desktop NVIDIA GPUs.
 
-**Isn't:** a training framework (PyTorch/JAX own that) or a cloud inference provider (vLLM/Baseten own that). Reflex's moat is the deployment toolchain: cross-framework ONNX, TensorRT FP16 engines that beat `torch.compile` on cloud GPU by 2.6-3.3× *and* run on Jetson, deterministic deploy graph, and the wedge composition for production robot deployments.
+**Isn't:** a training framework (PyTorch/JAX own that) or a cloud inference provider (vLLM/Baseten own that). Reflex's moat is the deployment toolchain: cross-framework ONNX with verified numerical parity, composable safety wedges, ROS2 + Docker + HTTP serving, and a deterministic export receipt (`VERIFICATION.md`) your QA team can audit.
 
-## Performance — Reflex TRT FP16 vs PyTorch alternatives
+## Verified parity (the only load-bearing numbers)
 
-> **Note (2026-04-17):** The latency tables below were measured on the earlier decomposed-ONNX path. The native path (lerobot `SmolVLAPolicy` + `DecomposedRMSNorm` swap) supersedes that path and has cos=1.0000 parity, but has not yet been re-benchmarked for latency. Treat these numbers as directional pending re-verification. See [reflex_context/measured_numbers.md](reflex_context/measured_numbers.md) for what's currently verified.
+Both SmolVLA and pi0 match the reference PyTorch policy to machine precision on shared seeded inputs:
 
-Per-denoising-step latency on Modal A10G (the closest cloud GPU to Jetson Orin's Ampere architecture). Lower is better:
-
-| Model | Params | PyTorch `torch.compile` | ONNX Runtime GPU FP32 | **Reflex TRT FP16** | Speedup |
+| Model | Path | first-action cos | first-action max_abs | full-chunk cos | full-chunk max_abs |
 |---|---|---|---|---|---|
-| SmolVLA | 99.8M | 3.06ms | 3.26ms | **0.95ms** | **3.2×** |
-| pi0 | 314.6M | 6.23ms | 5.53ms | **1.94ms** | **3.2×** |
-| pi0.5 | 426.9M | 7.34ms | 7.37ms | **2.24ms** | **3.3×** |
-| GR00T N1.6 | 1091.7M | 14.61ms | 14.45ms | **5.59ms** | **2.6×** |
+| SmolVLA | PyTorch native (DecomposedRMSNorm swap) | 1.0000 | 0.000 | — | — |
+| SmolVLA | Monolithic ONNX (num_steps=1) | **+1.0000000** | **1.55e-06** | **+1.0000000** | **3.34e-06** |
+| pi0 | PyTorch native wrapper vs raw sample_actions | **1.0000000000** | **0.000e+00 (bit-exact)** | 1.0 | 0.0 |
+| pi0 | Monolithic ONNX (num_steps=1) | **+1.0000000** | **1.43e-06** | **+1.0000000** | **2.98e-06** |
 
-Reflex's TensorRT FP16 path beats `torch.compile` by 2.6-3.3× on cloud GPU, and the same ONNX → TRT pipeline is what runs on Jetson — there is no "cloud version" vs "edge version" of the model.
+Full ledger of verified / unverified / unmeasured numbers: [reflex_context/measured_numbers.md](reflex_context/measured_numbers.md).
 
-Per-chunk wall-clock from `reflex bench` (full 10-step denoise loop, end-to-end including Python — what users experience):
-
-| Model | Per-chunk | Effective Hz |
-|---|---|---|
-| SmolVLA | 11.7 ms | **86 Hz** |
-| pi0 | 23.6 ms | **42 Hz** |
-| pi0.5 | 27.1 ms | **37 Hz** |
-| GR00T N1.6 | 56.6 ms | **18 Hz** |
-
-SmolVLA, pi0, and pi0.5 sit comfortably above the 20-30 Hz needed for real-time robot control on A10G. GR00T at 18 Hz is borderline and gets distilled / step-skipped for higher rates. Real Jetson Orin Nano numbers landing in a follow-up.
+**Latency numbers are intentionally not in the README yet** — earlier TRT FP16 tables were measured on a now-abandoned decomposed-ONNX path. Desktop GPU + Jetson latency re-measurement is tracked for v0.3. `reflex bench <export_dir>` reproduces on any hardware.
 
 Reproduce on your own GPU with one command:
 
@@ -202,18 +191,7 @@ reflex bench ./pi0 --iterations 100
 
 ### Multi-robot batching (`reflex serve --max-batch N`)
 
-pi0 on A10G, 32 concurrent /act requests:
-
-| `--max-batch` | Throughput | Wall-clock to serve 32 reqs | Speedup |
-|---|---|---|---|
-| 1 (baseline, serial) | 17.1 qps | 1.87s | 1.00× |
-| 4 | 40.0 qps | 0.80s | **2.34×** |
-| 8 | 46.6 qps | 0.69s | **2.73×** |
-| 16 | 49.3 qps | 0.65s | **2.88×** |
-
-Continuous batching on the HTTP layer — each `/act` request enters an asyncio queue, the server flushes the queue every `--batch-timeout-ms` (default 5ms) into one batched ONNX inference. Throughput scales 2.3-2.9× at batch sizes 4-16, and per-request latency *drops* because requests no longer serialize through the model.
-
-Methodology + raw data: [vla_to_hardware_roadmap/phase_1_vla_software/deployment_export](https://github.com/rylinjames/vla_to_hardware_roadmap/blob/main/phase_1_vla_software/deployment_export/build_candidates.md). Reproduce via `modal run scripts/modal_bench_trt_fp16.py`.
+Continuous batching on the HTTP layer: each `/act` request enters an asyncio queue; the server flushes the queue every `--batch-timeout-ms` (default 5ms) into one batched ONNX inference. Earlier measurements on the decomposed-ONNX path showed 2.3-2.9× throughput scaling at batch sizes 4-16; those numbers are being re-measured on the monolithic path for v0.3.
 
 ## License
 
