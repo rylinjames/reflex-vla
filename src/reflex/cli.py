@@ -872,6 +872,67 @@ def serve(
     uvicorn.run(app_instance, host=host, port=port, log_level="info" if verbose else "warning")
 
 
+@app.command(name="ros2-serve")
+def ros2_serve(
+    export_dir: str = typer.Argument(help="Path to exported model directory"),
+    device: str = typer.Option("cuda", help="ORT execution device: cuda or cpu"),
+    image_topic: str = typer.Option(
+        "/camera/image_raw",
+        help="sensor_msgs/Image topic for observation frames",
+    ),
+    state_topic: str = typer.Option(
+        "/joint_states",
+        help="sensor_msgs/JointState topic — .position field becomes the state vector",
+    ),
+    task_topic: str = typer.Option(
+        "/reflex/task",
+        help="std_msgs/String topic for the text instruction",
+    ),
+    action_topic: str = typer.Option(
+        "/reflex/actions",
+        help="std_msgs/Float32MultiArray topic — published chunk, flattened",
+    ),
+    rate_hz: float = typer.Option(20.0, help="Inference rate (Hz)"),
+    safety_config: str = typer.Option("", help="Path to SafetyLimits JSON"),
+    node_name: str = typer.Option("reflex_vla", help="ROS2 node name"),
+):
+    """Run a ROS2 node wrapping reflex inference.
+
+    Requires ROS2 installed via apt or robostack (rclpy is NOT pip-installable).
+    Source your ROS2 environment before running:
+
+        source /opt/ros/humble/setup.bash   # or iron / jazzy
+        reflex ros2-serve ./my_export/
+    """
+    try:
+        from reflex.runtime.ros2_bridge import run_ros2_bridge
+    except ImportError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2)
+
+    console.print(f"[bold green]Starting reflex ros2 bridge[/bold green]")
+    console.print(f"  export_dir: {export_dir}")
+    console.print(f"  node_name: {node_name}")
+    console.print(f"  rate_hz: {rate_hz}")
+    console.print(f"  subs: {image_topic}, {state_topic}, {task_topic}")
+    console.print(f"  pub:  {action_topic}")
+    try:
+        run_ros2_bridge(
+            export_dir,
+            device=device,
+            safety_config=safety_config or None,
+            image_topic=image_topic,
+            state_topic=state_topic,
+            task_topic=task_topic,
+            action_topic=action_topic,
+            rate_hz=rate_hz,
+            node_name=node_name,
+        )
+    except ImportError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2)
+
+
 @app.command()
 def targets():
     """List supported hardware targets."""

@@ -63,6 +63,24 @@ docker run --gpus all \
 
 The container's default command is `reflex serve /exports --host 0.0.0.0 --port 8000`. Override with any `reflex` subcommand: `docker run ... ghcr.io/rylinjames/reflex-vla:latest export <hf_id>` etc. Jetson arm64 images land in v0.3 (contact us if you need one sooner).
 
+### ROS2 — `reflex ros2-serve`
+
+Wraps the inference loop as a ROS2 node. Subscribes to `sensor_msgs/Image`, `sensor_msgs/JointState`, and `std_msgs/String`; publishes action chunks as `std_msgs/Float32MultiArray` at a configurable rate.
+
+```bash
+# rclpy is NOT pip-installable. Install ROS2 via apt or robostack first:
+source /opt/ros/humble/setup.bash   # or iron / jazzy
+
+reflex ros2-serve ./my_export \
+  --image-topic /camera/image_raw \
+  --state-topic /joint_states \
+  --task-topic  /reflex/task \
+  --action-topic /reflex/actions \
+  --rate-hz 20
+```
+
+Inference respects `--safety-config` (same limits file as HTTP serve).
+
 When `onnxruntime-gpu` ships with the TensorRT execution provider (it does in v1.20+), `reflex serve` uses TRT FP16 automatically and caches the engine in `<export_dir>/.trt_cache` so subsequent server starts skip the engine-build cost. The first `reflex serve` takes ~30-90s to warm up; restart is ~1-2s.
 
 ## Validation — round-trip ONNX vs PyTorch parity
