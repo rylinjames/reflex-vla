@@ -147,6 +147,33 @@ goals:
     check: "test -f src/reflex/safety/audit_log.py && .venv/bin/python -c 'from reflex.safety.audit_log import AuditLog' 2>/dev/null"
     weight: 3
 
+  # ── LAUNCH VERIFICATION (durable pre-launch + regression gates) ───
+
+  - id: fresh-install-verified
+    description: "`pip install 'reflex-vla[serve,gpu] @ git+https://...'` succeeds on a fresh python:3.12-slim container and `reflex --help` runs. Catches dep resolution breakage, broken editable installs, missing files in the wheel. Regression-check every release."
+    check: "test -f tests/test_fresh_install.py && .venv/bin/python -m pytest tests/test_fresh_install.py -q 2>/dev/null"
+    weight: 8
+
+  - id: cuda-runtime-verified
+    description: "Monolithic ONNX (SmolVLA + pi0) loads and runs on CUDAExecutionProvider with cos=1.0 vs CPUExecutionProvider on the same seeded inputs. Confirms the GPU serve path works end-to-end, not just the export. Without this, `reflex serve --device cuda` is a claim not a fact."
+    check: "test -f tests/test_cuda_runtime_parity.py && .venv/bin/python -m pytest tests/test_cuda_runtime_parity.py -q 2>/dev/null"
+    weight: 8
+
+  - id: num-steps-quality-gate
+    description: "Characterize action-quality drift between num_steps=1 (what monolithic ONNX currently bakes in) vs num_steps=10 (PyTorch default) on seeded fixtures. Write the cos/L2/max_abs drift to reflex_context/measured_numbers.md. If drift is significant, ship with warning + pin num_steps in model-card README. Without this, customers compare to their PyTorch num_steps=10 baseline and see regression they can't explain."
+    check: "test -f tests/test_num_steps_quality.py && .venv/bin/python -m pytest tests/test_num_steps_quality.py -q 2>/dev/null"
+    weight: 8
+
+  - id: docker-image-smoke-test
+    description: "Published `ghcr.io/rylinjames/reflex-vla:<version>` image runs end-to-end: `docker run --gpus all -v <export>:/exports -p 8000:8000 <image>` followed by `curl POST /act` returns a valid action chunk. Catches Dockerfile breakage, missing deps, entrypoint bugs — every release, before customers hit it."
+    check: "test -f tests/test_docker_image_smoke.py && .venv/bin/python -m pytest tests/test_docker_image_smoke.py -q 2>/dev/null"
+    weight: 7
+
+  - id: ros2-bridge-live
+    description: "`reflex ros2-serve` actually runs under real (not mocked) rclpy in a ros:humble container — subscribes to pub'd image/state/task topics, emits Float32MultiArray action chunks within the configured rate. Required because the current 8 tests use a FakeNode shim that will not catch rclpy API drift."
+    check: "test -f tests/test_ros2_bridge_live.py && .venv/bin/python -m pytest tests/test_ros2_bridge_live.py -q 2>/dev/null"
+    weight: 7
+
   # ── REGRESSION GATE (runs after every /evolve cycle) ──────────────
 
   - id: native-path-parity
