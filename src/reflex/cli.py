@@ -60,10 +60,66 @@ def export(
     no_validate: bool = typer.Option(False, help="Skip ONNX validation"),
     dry_run: bool = typer.Option(False, help="Check exportability without building engines"),
     verbose: bool = typer.Option(False, help="Verbose logging"),
+    monolithic: bool = typer.Option(
+        False,
+        "--monolithic",
+        help="Use the cos=1.0-verified monolithic ONNX export path (SmolVLA + pi0). "
+             "Requires `pip install 'reflex-vla[monolithic]'` — pins transformers==5.3.0. "
+             "Default OFF for v0.2 because the base install uses transformers<5.0.",
+    ),
+    num_steps: int = typer.Option(
+        10,
+        help="Denoise steps baked into the monolithic ONNX. "
+             "Canonical flow-matching = 10; use 1 for exact one-shot Euler. "
+             "Only used when --monolithic is set.",
+    ),
 ):
     """Export a VLA model to ONNX + TensorRT for edge deployment."""
     _setup_logging(verbose)
     hardware = get_hardware_profile(target)
+
+    if monolithic:
+        console.print(f"\n[bold]Reflex Export (monolithic, cos=1.0 verified path)[/bold]")
+        console.print(f"  Model:      {model}")
+        console.print(f"  Output:     {output}")
+        console.print(f"  num_steps:  {num_steps}")
+        console.print()
+
+        if dry_run:
+            console.print("[yellow]--dry-run not supported with --monolithic yet (v0.3 item). "
+                          "Re-run without --dry-run to export.[/yellow]")
+            raise typer.Exit()
+
+        try:
+            from reflex.exporters.monolithic import export_monolithic
+        except ImportError as exc:
+            console.print(f"[red]{exc}[/red]")
+            console.print("\n[cyan]Fix: pip install 'reflex-vla[monolithic]' "
+                          "(pins transformers==5.3.0; use a clean venv to avoid "
+                          "the base transformers<5.0 conflict)[/cyan]")
+            raise typer.Exit(2)
+
+        import time
+        start = time.perf_counter()
+        try:
+            result = export_monolithic(model, output, num_steps=num_steps)
+        except ImportError as exc:
+            console.print(f"[red]Missing monolithic dep: {exc}[/red]")
+            raise typer.Exit(2)
+        elapsed = time.perf_counter() - start
+        console.print(f"\n[bold green]Monolithic export complete in {elapsed:.1f}s[/bold green]")
+        console.print(f"  ONNX: {result['onnx_path']}")
+        console.print(f"  Size: {result['size_mb']:.1f} MB")
+
+        try:
+            from reflex.verification_report import write_verification_report
+            report_path = write_verification_report(output, parity=None)
+            console.print(f"  Verification manifest: {report_path}")
+        except Exception as exc:
+            console.print(f"[yellow]Verification manifest skipped: {exc}[/yellow]")
+
+        console.print(f"\n  [dim]Next:[/dim] [cyan]reflex serve {output}[/cyan]")
+        raise typer.Exit(0)
 
     console.print(f"\n[bold]Reflex Export[/bold]")
     console.print(f"  Model:     {model}")

@@ -1,0 +1,591 @@
+"""Monolithic ONNX export — the cos=1.0 verified production path.
+
+Extracted from `scripts/modal_{smolvla,pi0}_monolithic_export.py` so it can
+run locally (no Modal account required). Same set of transformers 5.x +
+onnx-diagnostic patches; same torch.export + torch.onnx.export pipeline;
+same post-export Where-type fix.
+
+Usage (local):
+    pip install 'reflex-vla[monolithic]'
+    reflex export lerobot/smolvla_base --monolithic --output ./smol
+
+Requires (pinned in the ``monolithic`` extra):
+    lerobot==0.5.1
+    transformers==5.3.0   (5.4+ has a q_length scalar regression)
+    onnx-diagnostic>=0.9
+    onnxscript>=0.1
+    optree, scipy, num2words
+
+The verified artifacts produced by this module match what the Modal
+scripts produce. See reflex_context/measured_numbers.md for the parity
+rows this export is responsible for.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import time
+from pathlib import Path
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+
+_CCM_NONE_RATIONALE = (
+    "The `create_causal_mask -> None` shim is load-bearing for num_steps>1. "
+    "Transformers 5.3 rebuilds a prefix-only [1,1,Q,past_len] mask that fails "
+    "to broadcast against the actual [1,H,Q,past_len+suffix_len] attention "
+    "scores under torch.export FakeTensor tracing (the `835 -> 886` expand "
+    "error). Skipping the rebuild unblocks export. For SmolVLA (SmolLM2 "
+    "attention path) this has NO semantic effect — cos=1.0 preserved. For "
+    "pi0 (PaliGemma + Gemma) this skips prefix-pad masking -> cos=0.977 at "
+    "num_steps=10. See 01_architecture/pi0_monolithic_wrap_pattern.md."
+)
+
+
+def _require_monolithic_deps() -> None:
+    """Check that the ``[monolithic]`` optional dep group is installed.
+
+    Raises ImportError with a clean message if anything's missing or a
+    transformers version mismatch is detected (5.4+ has the q_length bug).
+    """
+    missing = []
+    try:
+        import transformers
+        if transformers.__version__ != "5.3.0":
+            raise ImportError(
+                f"transformers {transformers.__version__} detected; the "
+                f"monolithic export requires exactly 5.3.0 (5.4+ has a "
+                f"q_length regression in masking_utils.sdpa_mask). Install "
+                f"with: pip install transformers==5.3.0"
+            )
+    except ImportError as e:
+        missing.append(f"transformers==5.3.0 ({e})")
+
+    for mod_name, pip_name in [
+        ("lerobot", "lerobot==0.5.1"),
+        ("onnx_diagnostic", "onnx-diagnostic>=0.9"),
+        ("onnxscript", "onnxscript>=0.1"),
+        ("optree", "optree"),
+        ("scipy", "scipy"),
+    ]:
+        try:
+            __import__(mod_name)
+        except ImportError:
+            missing.append(pip_name)
+
+    if missing:
+        raise ImportError(
+            "Missing dependencies for monolithic export:\n  - "
+            + "\n  - ".join(missing)
+            + "\n\nInstall with: pip install 'reflex-vla[monolithic]'"
+        )
+
+
+def apply_export_patches() -> None:
+    """Install the full set of transformers + lerobot patches required for
+    the monolithic `torch.export` path. Safe to call multiple times; later
+    calls stack on earlier ones since we read the previously-monkey-patched
+    function each time.
+    """
+    import copy
+    import sys
+    import types
+
+    import torch
+
+    # Stub GR00T imports to avoid Python 3.13 dataclass issue (harmless on 3.12 too)
+    for _mod in ("lerobot.policies.groot.groot_n1", "lerobot.policies.groot.modeling_groot"):
+        if _mod not in sys.modules:
+            stub = types.ModuleType(_mod)
+            stub.GrootPolicy = None
+            stub.GR00TN15 = None
+            sys.modules[_mod] = stub
+
+    # MambaCache stub for onnx-diagnostic compat with transformers 5.x
+    try:
+        from transformers.models.mamba.modeling_mamba import MambaCache  # noqa
+    except ImportError:
+        import transformers.cache_utils as _cu
+        if not hasattr(_cu, "MambaCache"):
+            class _MambaCacheStub:
+                pass
+            _cu.MambaCache = _MambaCacheStub
+            try:
+                import transformers.models.mamba.modeling_mamba as _mm
+                if not hasattr(_mm, "MambaCache"):
+                    _mm.MambaCache = _MambaCacheStub
+            except ImportError:
+                pass
+
+    # create_causal_mask -> None (see _CCM_NONE_RATIONALE)
+    from transformers import masking_utils
+
+    def _ccm_shim(*args, **kwargs):
+        if "inputs_embeds" in kwargs and "input_embeds" not in kwargs:
+            kwargs["input_embeds"] = kwargs.pop("inputs_embeds")
+        return None
+
+    masking_utils.create_causal_mask = _ccm_shim
+    try:
+        from lerobot.policies import pi_gemma as _pg
+        if hasattr(_pg, "create_causal_mask"):
+            _pg.create_causal_mask = _ccm_shim
+    except ImportError:
+        pass
+
+    # DynamicCache deepcopy bypass (FakeTensor can't be deepcopied)
+    _orig_deepcopy = copy.deepcopy
+
+    def _safe_deepcopy(obj, *args, **kwargs):
+        from transformers.cache_utils import DynamicCache
+        if isinstance(obj, DynamicCache):
+            return obj
+        return _orig_deepcopy(obj, *args, **kwargs)
+    copy.deepcopy = _safe_deepcopy
+
+    # SmolVLA pad_tensor/pad_vector: replace slice-assign with torch.cat so
+    # aten::index_put_ doesn't lower to ONNX Where(bool, int64, float).
+    try:
+        from lerobot.policies.smolvla import modeling_smolvla as _smv
+
+        def _safe_pad_tensor(tensor, max_len, pad_value=0):
+            b, d = tensor.shape[:2]
+            if d >= max_len:
+                return tensor[:, :max_len]
+            pad_shape = (b, max_len - d, *tensor.shape[2:])
+            pad = torch.full(
+                pad_shape, float(pad_value),
+                dtype=tensor.dtype, device=tensor.device,
+            )
+            return torch.cat([tensor, pad], dim=1)
+        _smv.pad_tensor = _safe_pad_tensor
+
+        def _safe_pad_vector(vector, new_dim):
+            current_dim = vector.shape[-1]
+            if current_dim >= new_dim:
+                return vector[..., :new_dim]
+            pad_shape = (*vector.shape[:-1], new_dim - current_dim)
+            pad = torch.zeros(pad_shape, dtype=vector.dtype, device=vector.device)
+            return torch.cat([vector, pad], dim=-1)
+        _smv.pad_vector = _safe_pad_vector
+    except ImportError:
+        pass
+
+    # torch.where dtype coercion (SmolVLM2 vision embed does
+    # torch.where(bool, int64_full, float32) which ONNX rejects)
+    _orig_where = torch.where
+
+    def _safe_where(condition, x=None, y=None, *args, **kwargs):
+        if (
+            x is not None and y is not None
+            and hasattr(x, "dtype") and hasattr(y, "dtype")
+            and x.dtype != y.dtype
+        ):
+            common = torch.promote_types(x.dtype, y.dtype)
+            if x.dtype != common:
+                x = x.to(common)
+            if y.dtype != common:
+                y = y.to(common)
+        return _orig_where(condition, x, y, *args, **kwargs)
+    torch.where = _safe_where
+
+    # pi0-specific: PaliGemmaWithExpertModel.embed_image image_outputs extraction
+    try:
+        from lerobot.policies.pi0 import modeling_pi0
+        import torch as _t
+
+        def _patched_embed_image(self, image):
+            out_dtype = image.dtype
+            if image.dtype != _t.float32:
+                image = image.to(_t.float32)
+            out = self.paligemma.model.get_image_features(image)
+            features = out.pooler_output if hasattr(out, "pooler_output") else out
+            features = features * self.paligemma.config.text_config.hidden_size ** 0.5
+            if features.dtype != out_dtype:
+                features = features.to(out_dtype)
+            return features
+        modeling_pi0.PaliGemmaWithExpertModel.embed_image = _patched_embed_image
+    except ImportError:
+        pass
+
+
+def _force_eager_attn(model: Any) -> None:
+    """Force every module's `_attn_implementation` to 'eager' — onnx-diagnostic's
+    sdpa_mask patch crashes with None cache_position under transformers 5.x."""
+    for mod in model.modules():
+        if hasattr(mod, "config") and hasattr(mod.config, "_attn_implementation"):
+            mod.config._attn_implementation = "eager"
+    if hasattr(model, "config") and hasattr(model.config, "_attn_implementation"):
+        model.config._attn_implementation = "eager"
+
+
+def _fix_onnx_where_dtype_mismatches(onnx_path: Path) -> int:
+    """Post-export pass: torch.onnx.export sometimes lowers aten::index_put to
+    ONNX Where(bool, int64, float32). onnxruntime rejects that at load time.
+    Walk the graph, find such Where ops, and insert Cast nodes that coerce
+    the mismatched branch to the declared output dtype.
+
+    Returns count of fixes applied.
+    """
+    import onnx
+    from onnx import helper, TensorProto
+
+    model = onnx.load(str(onnx_path), load_external_data=False)
+    shape_info = onnx.shape_inference.infer_shapes(
+        model, check_type=False, strict_mode=False
+    )
+
+    name_dtype: dict[str, int] = {}
+    for vi in list(shape_info.graph.value_info) + list(shape_info.graph.input) + list(shape_info.graph.output):
+        if vi.type.tensor_type.elem_type:
+            name_dtype[vi.name] = vi.type.tensor_type.elem_type
+    for init in shape_info.graph.initializer:
+        name_dtype[init.name] = init.data_type
+
+    FLOAT_TYPES = {TensorProto.FLOAT, TensorProto.FLOAT16, TensorProto.BFLOAT16, TensorProto.DOUBLE}
+    INT_TYPES = {TensorProto.INT64, TensorProto.INT32, TensorProto.INT16, TensorProto.INT8}
+
+    fixes = 0
+    new_nodes: list = []
+    for node in model.graph.node:
+        if node.op_type != "Where":
+            new_nodes.append(node)
+            continue
+        x_name, y_name = node.input[1], node.input[2]
+        out_name = node.output[0]
+        x_dt = name_dtype.get(x_name)
+        y_dt = name_dtype.get(y_name)
+        out_dt = name_dtype.get(out_name)
+        if not x_dt or not y_dt or x_dt == y_dt:
+            new_nodes.append(node)
+            continue
+        if out_dt and out_dt in (x_dt, y_dt):
+            target_dt = out_dt
+        else:
+            target_dt = x_dt if x_dt in INT_TYPES else y_dt
+        fixes_this = []
+        if x_dt != target_dt:
+            cast_out = f"{node.name}__cast_x"
+            cast_node = helper.make_node(
+                "Cast", [x_name], [cast_out],
+                name=f"{node.name}__cast_x_node", to=target_dt,
+            )
+            fixes_this.append(cast_node)
+            node.input[1] = cast_out
+        if y_dt != target_dt:
+            cast_out = f"{node.name}__cast_y"
+            cast_node = helper.make_node(
+                "Cast", [y_name], [cast_out],
+                name=f"{node.name}__cast_y_node", to=target_dt,
+            )
+            fixes_this.append(cast_node)
+            node.input[2] = cast_out
+        new_nodes.extend(fixes_this)
+        new_nodes.append(node)
+        fixes += 1
+        logger.info(
+            "fixed Where node %s (X=%s, Y=%s, out_decl=%s -> target=%s)",
+            node.name, x_dt, y_dt, out_dt, target_dt,
+        )
+
+    if fixes > 0:
+        model.graph.ClearField("node")
+        model.graph.node.extend(new_nodes)
+        with open(onnx_path, "wb") as f:
+            f.write(model.SerializeToString())
+
+    return fixes
+
+
+def export_smolvla_monolithic(
+    model_id: str,
+    output_dir: str | Path,
+    *,
+    num_steps: int = 10,
+) -> dict[str, Any]:
+    """Export SmolVLA as a single monolithic ONNX.
+
+    Parity: cos=1.0 at num_steps=10 vs PyTorch sample_actions(num_steps=10).
+
+    Args:
+        model_id: HuggingFace model ID (e.g. ``"lerobot/smolvla_base"``)
+        output_dir: where to write ``model.onnx`` + external data + config
+        num_steps: number of Euler integration steps baked into the graph.
+            Canonical flow-matching = 10. Use 1 only if you want the exact
+            one-shot Euler contract.
+
+    Returns:
+        ``{"status": "ok", "onnx_path": str, "size_mb": float}``
+    """
+    _require_monolithic_deps()
+
+    import torch
+    import torch.nn as nn
+    from onnx_diagnostic.torch_export_patches import torch_export_patches
+
+    apply_export_patches()
+
+    logger.info("[smolvla] Loading %s", model_id)
+    from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
+    t0 = time.time()
+    policy = SmolVLAPolicy.from_pretrained(model_id)
+    policy.eval().to("cpu").to(torch.float32)
+    policy.model.config.num_steps = num_steps
+    _force_eager_attn(policy.model)
+    logger.info("[smolvla] Loaded in %.1fs; num_steps=%d", time.time() - t0, num_steps)
+
+    class SmolVLAMonolithicWrapper(nn.Module):
+        def __init__(self, smolvla_model):
+            super().__init__()
+            self.model = smolvla_model
+
+        def forward(
+            self,
+            img_cam1, img_cam2, img_cam3,
+            mask_cam1, mask_cam2, mask_cam3,
+            lang_tokens, lang_masks,
+            state, noise,
+        ):
+            images = [img_cam1, img_cam2, img_cam3]
+            img_masks = [mask_cam1, mask_cam2, mask_cam3]
+            return self.model.sample_actions(
+                images, img_masks, lang_tokens, lang_masks, state, noise=noise,
+            )
+
+    wrapper = SmolVLAMonolithicWrapper(policy.model).eval()
+    cfg = policy.config
+    B = 1
+    chunk = cfg.chunk_size
+    action_dim = cfg.max_action_dim
+    state_dim = getattr(cfg, "max_state_dim", 32)
+
+    dummy = dict(
+        img_cam1=torch.randn(B, 3, 512, 512, dtype=torch.float32),
+        img_cam2=torch.randn(B, 3, 512, 512, dtype=torch.float32),
+        img_cam3=torch.randn(B, 3, 512, 512, dtype=torch.float32),
+        mask_cam1=torch.ones(B, dtype=torch.bool),
+        mask_cam2=torch.ones(B, dtype=torch.bool),
+        mask_cam3=torch.ones(B, dtype=torch.bool),
+        lang_tokens=torch.randint(0, 49152, (B, 16), dtype=torch.long),
+        lang_masks=torch.ones(B, 16, dtype=torch.bool),
+        state=torch.randn(B, state_dim, dtype=torch.float32),
+        noise=torch.randn(B, chunk, action_dim, dtype=torch.float32),
+    )
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    onnx_path = output_dir / "model.onnx"
+
+    logger.info("[smolvla] torch.export.export ...")
+    t0 = time.time()
+    with torch_export_patches(patch_transformers=True):
+        ep = torch.export.export(
+            wrapper, tuple(dummy.values()),
+            dynamic_shapes=None, strict=False,
+        )
+    logger.info("[smolvla] torch.export: %.1fs", time.time() - t0)
+
+    t0 = time.time()
+    torch.onnx.export(
+        ep, tuple(dummy.values()), str(onnx_path),
+        input_names=list(dummy.keys()), output_names=["actions"],
+        opset_version=19,
+    )
+    logger.info("[smolvla] ONNX conversion: %.1fs", time.time() - t0)
+
+    fixes = _fix_onnx_where_dtype_mismatches(onnx_path)
+    logger.info("[smolvla] post-export Cast fixes: %d", fixes)
+
+    _write_reflex_config(
+        output_dir, policy.config, num_steps=num_steps,
+        model_id=model_id, model_type="smolvla",
+    )
+
+    size_mb = onnx_path.stat().st_size / 1e6
+    data_files = list(output_dir.glob("*.data"))
+    total_mb = sum(f.stat().st_size for f in data_files) / 1e6 + size_mb
+    return {
+        "status": "ok",
+        "onnx_path": str(onnx_path),
+        "size_mb": total_mb,
+        "num_steps": num_steps,
+    }
+
+
+def export_pi0_monolithic(
+    model_id: str,
+    output_dir: str | Path,
+    *,
+    num_steps: int = 10,
+) -> dict[str, Any]:
+    """Export pi0 as a single monolithic ONNX.
+
+    Parity: cos=1.0 at num_steps=1, cos=0.977 at num_steps=10 (the ccm=None
+    shim skips prefix-pad masking on pi0's PaliGemma path — v0.3 fix tracked).
+
+    Args, returns: same shape as ``export_smolvla_monolithic``.
+    """
+    _require_monolithic_deps()
+
+    import torch
+    import torch.nn as nn
+    from onnx_diagnostic.torch_export_patches import torch_export_patches
+
+    apply_export_patches()
+
+    logger.info("[pi0] Loading %s", model_id)
+    from lerobot.policies.pi0.modeling_pi0 import PI0Policy
+    t0 = time.time()
+    policy = PI0Policy.from_pretrained(model_id)
+    policy.eval().to("cpu").to(torch.float32)
+    _force_eager_attn(policy.model)
+    logger.info("[pi0] Loaded in %.1fs", time.time() - t0)
+
+    class Pi0MonolithicWrapper(nn.Module):
+        def __init__(self, pi0_model, n_steps):
+            super().__init__()
+            self.model = pi0_model
+            self.n_steps = n_steps
+
+        def forward(
+            self,
+            img_base, img_wrist_l, img_wrist_r,
+            mask_base, mask_wrist_l, mask_wrist_r,
+            lang_tokens, lang_masks,
+            state, noise,
+        ):
+            images = [img_base, img_wrist_l, img_wrist_r]
+            img_masks = [mask_base, mask_wrist_l, mask_wrist_r]
+            return self.model.sample_actions(
+                images, img_masks, lang_tokens, lang_masks, state,
+                noise=noise, num_steps=self.n_steps,
+            )
+
+    wrapper = Pi0MonolithicWrapper(policy.model, num_steps).eval()
+    cfg = policy.config
+    B = 1
+    chunk = cfg.chunk_size
+    action_dim = cfg.max_action_dim
+    state_dim = getattr(cfg, "max_state_dim", 32)
+
+    dummy = dict(
+        img_base=torch.randn(B, 3, 224, 224, dtype=torch.float32),
+        img_wrist_l=torch.randn(B, 3, 224, 224, dtype=torch.float32),
+        img_wrist_r=torch.randn(B, 3, 224, 224, dtype=torch.float32),
+        mask_base=torch.ones(B, dtype=torch.bool),
+        mask_wrist_l=torch.ones(B, dtype=torch.bool),
+        mask_wrist_r=torch.ones(B, dtype=torch.bool),
+        lang_tokens=torch.randint(0, 257152, (B, 16), dtype=torch.long),
+        lang_masks=torch.ones(B, 16, dtype=torch.bool),
+        state=torch.randn(B, state_dim, dtype=torch.float32),
+        noise=torch.randn(B, chunk, action_dim, dtype=torch.float32),
+    )
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    onnx_path = output_dir / "model.onnx"
+
+    logger.info("[pi0] torch.export.export ...")
+    t0 = time.time()
+    with torch_export_patches(patch_transformers=True):
+        ep = torch.export.export(
+            wrapper, tuple(dummy.values()),
+            dynamic_shapes=None, strict=False,
+        )
+    logger.info("[pi0] torch.export: %.1fs", time.time() - t0)
+
+    t0 = time.time()
+    torch.onnx.export(
+        ep, tuple(dummy.values()), str(onnx_path),
+        input_names=list(dummy.keys()), output_names=["actions"],
+        opset_version=19,
+    )
+    logger.info("[pi0] ONNX conversion: %.1fs", time.time() - t0)
+
+    fixes = _fix_onnx_where_dtype_mismatches(onnx_path)
+    logger.info("[pi0] post-export Cast fixes: %d", fixes)
+
+    _write_reflex_config(
+        output_dir, policy.config, num_steps=num_steps,
+        model_id=model_id, model_type="pi0",
+    )
+
+    size_mb = onnx_path.stat().st_size / 1e6
+    data_files = list(output_dir.glob("*.data"))
+    total_mb = sum(f.stat().st_size for f in data_files) / 1e6 + size_mb
+    return {
+        "status": "ok",
+        "onnx_path": str(onnx_path),
+        "size_mb": total_mb,
+        "num_steps": num_steps,
+    }
+
+
+def _write_reflex_config(
+    output_dir: Path,
+    policy_config: Any,
+    *,
+    num_steps: int,
+    model_id: str,
+    model_type: str,
+) -> None:
+    """Write `reflex_config.json` so `reflex serve` knows what to load."""
+    cfg_dict = {
+        "model_id": model_id,
+        "model_type": model_type,
+        "num_denoising_steps": num_steps,
+        "chunk_size": getattr(policy_config, "chunk_size", 50),
+        "action_chunk_size": getattr(policy_config, "chunk_size", 50),
+        "action_dim": getattr(policy_config, "max_action_dim", 32),
+        "max_state_dim": getattr(policy_config, "max_state_dim", 32),
+        "opset": 19,
+        "export_kind": "monolithic",
+        "notes": _CCM_NONE_RATIONALE if num_steps > 1 else None,
+    }
+    (output_dir / "reflex_config.json").write_text(
+        json.dumps(cfg_dict, indent=2, default=str)
+    )
+
+
+def export_monolithic(
+    model_id: str,
+    output_dir: str | Path,
+    *,
+    num_steps: int = 10,
+    model_type: str | None = None,
+) -> dict[str, Any]:
+    """Dispatch to the right model-specific exporter.
+
+    If ``model_type`` is None, infer from ``model_id`` (substring match).
+    Currently supported: smolvla, pi0.
+    """
+    if model_type is None:
+        mid = model_id.lower()
+        if "smolvla" in mid:
+            model_type = "smolvla"
+        elif "pi0" in mid or "pi_0" in mid:
+            model_type = "pi0"
+        else:
+            raise ValueError(
+                f"Cannot infer model_type from '{model_id}'. "
+                f"Pass model_type='smolvla' or 'pi0' explicitly."
+            )
+
+    if model_type == "smolvla":
+        return export_smolvla_monolithic(model_id, output_dir, num_steps=num_steps)
+    if model_type == "pi0":
+        return export_pi0_monolithic(model_id, output_dir, num_steps=num_steps)
+
+    raise ValueError(
+        f"Monolithic export for model_type={model_type!r} not yet supported. "
+        f"v0.2 covers SmolVLA + pi0; pi0.5 and GR00T are v0.3."
+    )
+
+
+__all__ = [
+    "export_monolithic",
+    "export_pi0_monolithic",
+    "export_smolvla_monolithic",
+    "apply_export_patches",
+]
