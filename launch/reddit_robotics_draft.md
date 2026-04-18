@@ -14,10 +14,10 @@ I built [Reflex](https://github.com/rylinjames/reflex-vla), an open-source CLI f
 
 | Model | num_steps=1 ONNX vs PyTorch(num_steps=1) | num_steps=10 ONNX vs PyTorch(num_steps=10) |
 |---|---|---|
-| SmolVLA | **cos=+1.0000000, max_abs=1.55e-06** | (export succeeded — parity pending at time of writing) |
-| pi0     | **cos=+1.0000000, max_abs=1.43e-06** | **cos=+0.977, max_abs=1.31e-01** |
+| SmolVLA | **max_abs=1.55e-06** (machine precision) | **max_abs=5.96e-07** (machine precision) |
+| pi0     | **max_abs=1.43e-06** (machine precision) | **max_abs=1.31e-01, cos=0.977** (approximation) |
 
-The num_steps=10 artifact uses a `create_causal_mask → None` shim to dodge a `torch.export` shape-tracing bug. Semantic cost: prefix pad positions aren't masked → cos=0.977 vs 1.0. Still strictly closer to canonical behavior than num_steps=1 (cos=0.897 against same reference). Restoring cos=1.0 at num_steps=10 is a v0.3 item.
+Both num_steps=10 exports use a `create_causal_mask → None` shim to dodge a `torch.export` shape-tracing bug. For SmolVLA the shim has no semantic impact (SmolLM2 attention path) — cos stays at 1.0. For pi0 (PaliGemma + Gemma) the shim skips prefix-pad masking, costing ~2% parity. Restoring pi0 cos=1.0 at num_steps=10 is a v0.3 item.
 
 Three commands from zero to serving:
 

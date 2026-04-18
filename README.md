@@ -171,17 +171,18 @@ Each wedge works standalone for scripting, and every wedge that belongs in the i
 
 ## Verified parity (the only load-bearing numbers)
 
-Two ONNX artifacts per model, measured against PyTorch on shared seeded inputs:
+Four ONNX artifacts in production, measured against PyTorch on shared seeded inputs:
 
-| Artifact | Reference | first-action cos | first-action max_abs |
+| Artifact | Reference | first-action max_abs | verdict |
 |---|---|---|---|
-| SmolVLA ONNX, num_steps=1 | `sample_actions(num_steps=1)` | **+1.0000000** | **1.55e-06** |
-| pi0 ONNX, num_steps=1 | `sample_actions(num_steps=1)` | **+1.0000000** | **1.43e-06** |
-| **pi0 ONNX, num_steps=10** (recommended default) | `sample_actions(num_steps=10)` | **+0.977058** | **1.31e-01** |
-| SmolVLA PyTorch native (DecomposedRMSNorm swap) | reference PyTorch | 1.0000 | 0.000 |
-| pi0 PyTorch native wrapper vs raw `sample_actions` | raw `sample_actions` | 1.0000 | 0.000 (bit-exact) |
+| **SmolVLA ONNX, num_steps=10** (production default) | `sample_actions(num_steps=10)` | **5.96e-07** | ✅ machine precision |
+| **pi0 ONNX, num_steps=10** (production default) | `sample_actions(num_steps=10)` | 1.31e-01 (cos=0.977) | ✅ approximation, documented |
+| SmolVLA ONNX, num_steps=1 | `sample_actions(num_steps=1)` | 1.55e-06 | ✅ machine precision |
+| pi0 ONNX, num_steps=1 | `sample_actions(num_steps=1)` | 1.43e-06 | ✅ machine precision |
 
-**About the num_steps=10 artifact**: flow-matching VLAs canonically integrate with 10 Euler steps; num_steps=1 does one big step with `dt=-1.0`. The num_steps=10 ONNX is the production default — numerically closer to canonical behavior (cos=0.977 vs 0.897 for num_steps=1 against the same reference). It uses a `create_causal_mask → None` shim to work around a shape-tracing bug in `torch.export` that prevented the original num_steps=10 export (documented in `reflex_context/01_architecture/pi0_monolithic_wrap_pattern.md`). The shim's semantic cost: prefix pad positions aren't masked. Restoring cos=1.0 at num_steps=10 requires a deeper Gemma-attention patch and is tracked for v0.3.
+Plus PyTorch-level native-path sanity checks (`SmolVLAPolicy` with DecomposedRMSNorm swap vs reference = cos=1.0; `PI0Policy.predict_action_chunk` vs raw `sample_actions` = bit-exact).
+
+**About the num_steps=10 artifacts**: flow-matching VLAs canonically integrate the learned velocity field with 10 Euler steps. Exporting that unrolled loop hit a transformers 5.3 shape-tracing bug (prefix-pad mask rebuild vs suffix-extended K — see `reflex_context/01_architecture/pi0_monolithic_wrap_pattern.md`). A `create_causal_mask → None` shim unblocks export for both models. **For SmolVLA (SmolLM2 backbone) the shim has no semantic impact — cos=1.0 at machine precision.** For pi0 (PaliGemma + Gemma backbone) the shim skips prefix-pad masking, costing ~2% action parity (cos=0.977). Restoring pi0's cos=1.0 at num_steps=10 requires a deeper Gemma inner-attention patch — tracked for v0.3.
 
 Full ledger: [reflex_context/measured_numbers.md](reflex_context/measured_numbers.md).
 

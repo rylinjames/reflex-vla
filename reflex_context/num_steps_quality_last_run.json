@@ -27,8 +27,12 @@
       "first_cos": 0.977058,
       "first_max_abs": 0.131,
       "full_max_abs": 0.248,
-      "verdict": "ship with approximation disclosure"
+      "verdict": "ship with approximation disclosure (prefix-pad masking gap under ccm=None shim)"
     },
-    "smolvla": {"status": "export running at time of writing"}
+    "smolvla": {
+      "first_max_abs": 5.96e-07,
+      "full_max_abs": 3.70e-06,
+      "verdict": "PASS — machine precision (ccm=None shim has no semantic impact on SmolLM2 attention path)"
+    }
   }
 }

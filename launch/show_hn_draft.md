@@ -10,10 +10,13 @@ Hi HN —
 
 I built Reflex because the path from "we have a trained Vision-Language-Action model" to "it runs on a real robot" is painful. Every VLA team writes their own export pipeline. Most break silently under FP16 / TRT / Jetson constraints.
 
-**What's verified today:** I export two of the most-used open VLAs — SmolVLA (HuggingFace LeRobot) and pi0 (Physical Intelligence, via lerobot) — as monolithic ONNX. Two numbers matter:
+**What's verified today:** I export two of the most-used open VLAs — SmolVLA (HuggingFace LeRobot) and pi0 (Physical Intelligence, via lerobot) — as monolithic ONNX covering the full 10-step flow-matching denoise. Measured on shared seeded inputs against PyTorch eager:
 
-- **num_steps=1 artifact**: cos = +1.0000000 vs PyTorch `sample_actions(num_steps=1)`. Machine precision (max abs 1.43e-06 for pi0, 1.55e-06 for SmolVLA).
-- **num_steps=10 artifact (the canonical flow-matching denoise)**: cos = +0.977 vs PyTorch `sample_actions(num_steps=10)`. Uses a `create_causal_mask → None` shim to dodge a `torch.export` shape-tracing bug — semantic cost is prefix pad positions aren't masked. Restoring cos=1.0 here is a v0.3 item; the cos=0.977 artifact is still strictly closer to canonical behavior than num_steps=1 (which is 0.897 against the same reference).
+- **SmolVLA num_steps=10 ONNX**: max_abs = 5.96e-07 (first-action) / 3.70e-06 (full chunk) vs `sample_actions(num_steps=10)`. **Machine precision.**
+- **pi0 num_steps=10 ONNX**: max_abs = 1.31e-01, cos = 0.977 vs `sample_actions(num_steps=10)`. An **approximation** — the `create_causal_mask → None` shim we use to unblock `torch.export` accidentally skips prefix-pad masking on pi0's PaliGemma path. SmolVLA's SmolLM2 backbone isn't affected by this shim, which is why it stays at machine precision.
+- Both models also available at num_steps=1, cos = +1.0000000 at machine precision (for users who want the exact one-shot Euler).
+
+Fixing pi0's cos=0.977 → 1.0 at num_steps=10 requires patching Gemma's inner attention forward to use pi0's explicit 4D mask directly — ~5 hours of transformers surgery, tracked for v0.3.
 
 ```bash
 pip install 'reflex-vla[serve,gpu] @ git+https://github.com/rylinjames/reflex-vla'

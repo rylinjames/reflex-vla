@@ -27,10 +27,10 @@ Two ONNX artifacts per model, both measured against PyTorch on shared seeded inp
 - SmolVLA: cos=+1.0000000, max_abs=1.55e-06 (full-chunk max_abs=3.34e-06)
 - pi0: cos=+1.0000000, max_abs=1.43e-06 (full-chunk max_abs=2.98e-06)
 
-**num_steps=10 (canonical flow-matching, recommended default)**: unrolls the 10-step Euler loop at trace time. Uses a `create_causal_mask → None` shim to unblock a `torch.export` shape-tracing bug (835 -> 886 broadcast on suffix-extended K); semantic cost is prefix pad positions aren't masked.
-- pi0: cos=+0.977 vs `sample_actions(num_steps=10)`, max_abs=1.31e-01
-- Still strictly closer to canonical than num_steps=1 (cos=0.897 against same reference)
-- Restoring cos=1.0 at num_steps=10 is a v0.3 item — needs a Gemma inner-attention patch
+**num_steps=10 (canonical flow-matching, recommended default)**: unrolls the 10-step Euler loop at trace time. Uses a `create_causal_mask → None` shim to unblock a `torch.export` shape-tracing bug (835 -> 886 broadcast on suffix-extended K).
+- SmolVLA num_steps=10 ONNX: max_abs=5.96e-07 first / 3.70e-06 full (machine precision — the shim has no semantic effect on SmolLM2's attention path)
+- pi0 num_steps=10 ONNX: cos=0.977, max_abs=1.31e-01 — the shim skips PaliGemma's prefix-pad masking, costing ~2% parity
+- Restoring pi0 cos=1.0 at num_steps=10 is a v0.3 item — Gemma inner-attention patch needed
 
 **pi0 native-path sanity**: `PI0Policy.predict_action_chunk` wrapper vs raw `sample_actions` = bit-exact (max_abs = 0.0).
 
