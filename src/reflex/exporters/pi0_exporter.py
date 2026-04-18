@@ -133,9 +133,13 @@ def build_pi0_expert_stack(
             cross_indices.append(i)
             vlm_kv_dim = kv_in
 
+        # pi0 uses Gemma's standard rope_theta=10000, NOT SmolVLA's 100000.
+        # Without this override RoPE frequencies are ~10x too small → positions
+        # barely affect attention → expert output insensitive to position_ids.
         layer = ExpertGQALayer(
             expert_hidden, nq, nkv, head_dim, inter,
             kv_in=kv_in if is_cross else None,
+            rope_theta=10000.0,
         )
         layer_sd = {
             "input_layernorm.weight": state_dict[f"{prefix}.input_layernorm.weight"],

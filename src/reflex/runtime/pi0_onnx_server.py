@@ -214,7 +214,11 @@ class Pi0OnnxServer:
             noise = np.random.RandomState(0).randn(B, chunk_size, self.action_dim).astype(np.float32)
         x_t = noise.copy()
         dt = -1.0 / num_steps
-        pos_ids = np.arange(chunk_size, dtype=np.int64)[None, :].repeat(B, 0)
+        # Pi0's position_ids for suffix (action) tokens start AFTER the prefix:
+        # position_ids = prefix_offsets + cumsum(suffix_pad_masks) - 1
+        # For unpadded prefix: [prefix_len, prefix_len+1, ..., prefix_len+chunk-1]
+        prefix_len = prefix_k.shape[2]  # [L, B, prefix_len, nkv, hd]
+        pos_ids = (prefix_len + np.arange(chunk_size, dtype=np.int64))[None, :].repeat(B, 0)
 
         for step in range(num_steps):
             t = 1.0 + step * dt

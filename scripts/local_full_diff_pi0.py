@@ -25,6 +25,54 @@ for _mod in ("lerobot.policies.groot.groot_n1", "lerobot.policies.groot.modeling
 import numpy as np
 import torch
 
+
+def _patch_pi0_for_transformers_457():
+    """lerobot 0.5.1 pi0 uses image_outputs.pooler_output but transformers
+    4.57.6 returns a raw Tensor from get_image_features. Patch embed_image
+    to handle the newer signature."""
+    from lerobot.policies.pi0 import modeling_pi0
+
+    original = modeling_pi0.PaliGemmaWithExpertModel.embed_image
+
+    def patched_embed_image(self, image):
+        out_dtype = image.dtype
+        if image.dtype != torch.float32:
+            image = image.to(torch.float32)
+        image_outputs = self.paligemma.model.get_image_features(image)
+        # New transformers returns a Tensor directly; old returned ModelOutput
+        if hasattr(image_outputs, "pooler_output"):
+            features = image_outputs.pooler_output
+        else:
+            features = image_outputs  # already the pooler-style features tensor
+        features = features * self.paligemma.config.text_config.hidden_size ** 0.5
+        if features.dtype != out_dtype:
+            features = features.to(out_dtype)
+        return features
+
+    modeling_pi0.PaliGemmaWithExpertModel.embed_image = patched_embed_image
+
+
+def _patch_create_causal_mask_kwarg():
+    """lerobot/pi_gemma.py passes inputs_embeds= but transformers 4.57.6's
+    create_causal_mask renamed to input_embeds=. Shim to accept both."""
+    from transformers import masking_utils
+
+    original = masking_utils.create_causal_mask
+
+    def shim(*args, **kwargs):
+        if "inputs_embeds" in kwargs and "input_embeds" not in kwargs:
+            kwargs["input_embeds"] = kwargs.pop("inputs_embeds")
+        return original(*args, **kwargs)
+
+    masking_utils.create_causal_mask = shim
+    from lerobot.policies import pi_gemma
+    if hasattr(pi_gemma, "create_causal_mask"):
+        pi_gemma.create_causal_mask = shim
+
+
+_patch_pi0_for_transformers_457()
+_patch_create_causal_mask_kwarg()
+
 EXPORT_DIR = "/tmp/pi0_full_prefix_export"
 
 
