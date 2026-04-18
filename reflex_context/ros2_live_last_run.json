@@ -1,0 +1,19 @@
+{
+  "date": "2026-04-18",
+  "reproducer": "modal run scripts/modal_ros2_live_test.py",
+  "passed": true,
+  "checks": {
+    "node_created": true,
+    "spin_once": true,
+    "shutdown": true
+  },
+  "environment": {
+    "base_image": "ubuntu:22.04",
+    "ros_distro": "humble",
+    "ros_package": "ros-humble-ros-base (apt)",
+    "python": "3.10",
+    "numpy": "1.26.4",
+    "rclpy": "from apt, ROS2 humble 3.3.21"
+  },
+  "notes": "Research-backed image recipe: ubuntu:22.04 + apt-install ros-humble-ros-base + symlink python + pip constraint numpy>=1.24,<2.0. numpy 1.26 is ABI-forward-compatible with rclpy's compiled-against-1.21 extension (1.x compat). DEBIAN_FRONTEND=noninteractive + pre-linked localtime stops tzdata prompt during apt install. Env vars baked via .env() so no setup.bash sourcing needed."
+}
