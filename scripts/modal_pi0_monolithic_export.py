@@ -403,15 +403,120 @@ def parity_test_monolithic(model_id: str = "lerobot/pi0_base"):
     }
 
 
+@app.function(
+    image=image,
+    gpu="A10G",
+    timeout=1800,
+    volumes={HF_CACHE_PATH: hf_cache},
+    secrets=[
+        modal.Secret.from_dict({"HF_TOKEN": "REMOVED_HF_TOKEN"}),
+    ],
+)
+def parity_native_pi0(model_id: str = "lerobot/pi0_base"):
+    """Native-path parity: PI0Policy.predict_action_chunk (wrapper) vs
+    PI0Pytorch.sample_actions (raw) on same seeded inputs.
+
+    Closes the cross-framework moat claim for pi0 — SmolVLA already has
+    this via `native-path-parity` item #1 (DecomposedRMSNorm swap path).
+    For pi0, no swap needed, so this is trivially cos=1.0 but worth
+    recording as a measured number.
+    """
+    import sys, types
+    for _mod in ("lerobot.policies.groot.groot_n1", "lerobot.policies.groot.modeling_groot"):
+        stub = types.ModuleType(_mod); stub.GrootPolicy = None; stub.GR00TN15 = None
+        sys.modules[_mod] = stub
+
+    import numpy as np
+    import torch
+
+    print("[native] Loading PI0Policy...")
+    from lerobot.policies.pi0.modeling_pi0 import PI0Policy
+    from lerobot.processor.pipeline import PolicyProcessorPipeline
+    from lerobot.processor.converters import batch_to_transition, transition_to_batch
+    from huggingface_hub import snapshot_download
+
+    policy = PI0Policy.from_pretrained(model_id).eval().to(torch.float32).to("cpu")
+    repo = snapshot_download(model_id)
+    pre = PolicyProcessorPipeline.from_pretrained(
+        pretrained_model_name_or_path=repo,
+        config_filename="policy_preprocessor.json",
+        to_transition=batch_to_transition,
+        to_output=transition_to_batch,
+        overrides={"device_processor": {"device": "cpu"}},
+    )
+
+    # Build realistic batch
+    cfg = policy.config
+    chunk = cfg.chunk_size
+    action_dim = cfg.max_action_dim
+
+    rng = np.random.RandomState(42)
+    img_np = rng.randint(0, 255, (224, 224, 3), dtype=np.uint8)
+    img_t = torch.from_numpy(img_np).permute(2, 0, 1).float() / 255.0
+    state = torch.from_numpy(rng.randn(14).astype(np.float32) * 0.1)
+
+    batch_raw = {
+        "observation.images.base_0_rgb": img_t.unsqueeze(0),
+        "observation.images.left_wrist_0_rgb": img_t.unsqueeze(0),
+        "observation.images.right_wrist_0_rgb": img_t.unsqueeze(0),
+        "observation.state": state.unsqueeze(0),
+        "task": ["pick up the red bowl"],
+    }
+    batch = pre(batch_raw)
+    noise = torch.from_numpy(np.random.RandomState(99).randn(1, chunk, action_dim).astype(np.float32))
+
+    # Path 1: wrapper
+    print("[native] Running PI0Policy.predict_action_chunk (wrapper)...")
+    with torch.no_grad():
+        a_wrapper = policy.predict_action_chunk(batch, noise=noise).cpu().numpy()
+
+    # Path 2: raw — reproduce what the wrapper does internally
+    print("[native] Running PI0Pytorch.sample_actions (raw)...")
+    images, img_masks = policy._preprocess_images(batch)
+    lang_tokens = batch["observation.language.tokens"]
+    lang_masks = batch["observation.language.attention_mask"]
+    state_padded = policy.prepare_state(batch)
+    with torch.no_grad():
+        a_raw = policy.model.sample_actions(
+            images, img_masks, lang_tokens, lang_masks, state_padded, noise=noise,
+        ).cpu().numpy()
+    # Wrapper slices to original action_dim
+    orig_action_dim = a_wrapper.shape[-1]
+    a_raw_sliced = a_raw[:, :, :orig_action_dim]
+
+    # Compare
+    def _cos(a, b):
+        af, bf = a.flatten().astype(np.float64), b.flatten().astype(np.float64)
+        return float(af @ bf / (np.linalg.norm(af) * np.linalg.norm(bf) + 1e-12))
+    first_cos = _cos(a_wrapper[0, 0], a_raw_sliced[0, 0])
+    first_max = float(np.max(np.abs(a_wrapper[0, 0] - a_raw_sliced[0, 0])))
+    full_cos = _cos(a_wrapper, a_raw_sliced)
+    full_max = float(np.max(np.abs(a_wrapper - a_raw_sliced)))
+    print(f"[native] wrapper first: {a_wrapper[0, 0, :5]}")
+    print(f"[native] raw     first: {a_raw_sliced[0, 0, :5]}")
+    print(f"[native]   first_cos={first_cos:.10f}, first_max={first_max:.3e}")
+    print(f"[native]   full_cos ={full_cos:.10f}, full_max ={full_max:.3e}")
+    passed = first_cos >= 0.999 and full_cos >= 0.999
+    print(f"[native] VERDICT: {'PASS' if passed else 'FAIL'}")
+    return {
+        "first_cos": first_cos, "first_max_abs": first_max,
+        "full_cos": full_cos, "full_max_abs": full_max,
+        "passed": passed,
+    }
+
+
 @app.local_entrypoint()
-def main(num_steps: int = 1, parity: bool = False):
+def main(num_steps: int = 1, parity: bool = False, native: bool = False):
     """Default to num_steps=1 (the only working config currently).
 
     Usage:
         modal run scripts/modal_pi0_monolithic_export.py              # export
-        modal run scripts/modal_pi0_monolithic_export.py --parity     # parity test
+        modal run scripts/modal_pi0_monolithic_export.py --parity     # ONNX parity
+        modal run scripts/modal_pi0_monolithic_export.py --native     # native parity
     """
-    if parity:
+    if native:
+        result = parity_native_pi0.remote()
+    elif parity:
         result = parity_test_monolithic.remote()
     else:
         result = export_pi0_monolithic_modal.remote(num_steps=num_steps)

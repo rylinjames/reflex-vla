@@ -48,6 +48,21 @@ curl -X POST http://localhost:8000/act -H 'content-type: application/json' \
 
 That's it. `reflex` auto-detects whether you gave it SmolVLA / pi0 / pi0.5 / GR00T and dispatches to the right exporter. No framework-specific flags.
 
+### Docker — zero-install serve
+
+```bash
+# Pull the published image (x86_64 CUDA runtime)
+docker pull ghcr.io/rylinjames/reflex-vla:latest
+
+# Mount your exports dir at /exports, expose port 8000
+docker run --gpus all \
+  -v $(pwd)/p0:/exports \
+  -p 8000:8000 \
+  ghcr.io/rylinjames/reflex-vla:latest
+```
+
+The container's default command is `reflex serve /exports --host 0.0.0.0 --port 8000`. Override with any `reflex` subcommand: `docker run ... ghcr.io/rylinjames/reflex-vla:latest export <hf_id>` etc. Jetson arm64 images land in v0.3 (contact us if you need one sooner).
+
 When `onnxruntime-gpu` ships with the TensorRT execution provider (it does in v1.20+), `reflex serve` uses TRT FP16 automatically and caches the engine in `<export_dir>/.trt_cache` so subsequent server starts skip the engine-build cost. The first `reflex serve` takes ~30-90s to warm up; restart is ~1-2s.
 
 ## Validation — round-trip ONNX vs PyTorch parity

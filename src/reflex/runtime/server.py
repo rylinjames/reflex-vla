@@ -487,6 +487,13 @@ class ReflexServer:
             return {"error": "Model not loaded. Call load() first."}
         if not self._inference_mode.startswith("onnx"):
             return {"error": f"Unknown inference mode: {self._inference_mode}"}
+        if self._action_guard is not None and self._action_guard.tripped:
+            return {
+                "error": "guard_tripped",
+                "reason": self._action_guard.trip_reason,
+                "hint": "Investigate upstream (inputs / sensors / model) and "
+                        "call POST /guard/reset to resume.",
+            }
 
         start = time.perf_counter()
 
@@ -941,5 +948,31 @@ def create_app(
     @app.get("/config")
     async def config():
         return JSONResponse(content=server.config)
+
+    @app.get("/guard/status")
+    async def guard_status():
+        g = getattr(server, "_action_guard", None)
+        if g is None:
+            return JSONResponse(content={"enabled": False})
+        return JSONResponse(content={
+            "enabled": True,
+            "tripped": bool(g.tripped),
+            "trip_reason": g.trip_reason,
+            "consecutive_clamps": int(g.consecutive_clamps),
+            "max_consecutive_clamps": int(g.max_consecutive_clamps),
+            "inference_count": int(g.inference_count),
+        })
+
+    @app.post("/guard/reset")
+    async def guard_reset():
+        g = getattr(server, "_action_guard", None)
+        if g is None:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "guard_not_enabled"},
+            )
+        was_tripped = bool(g.tripped)
+        g.reset()
+        return JSONResponse(content={"reset": True, "was_tripped": was_tripped})
 
     return app

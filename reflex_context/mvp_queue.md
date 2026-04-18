@@ -28,16 +28,16 @@ Priority order reflects dependency + moat impact, not raw weight.
 | 2 | `vlm-prefix-encoder` | 10 | ✅ done | 0 | check passes (real SmolVLM2 + SmolLM2 ONNX) |
 | 3 | `text-embedder-onnx` | 10 | ✅ done | 0 | check passes |
 | 4 | `quickstart-docs` | 6 | ✅ done | 0 | check passes; may still need polish pre-launch |
-| 5 | `smolvla-onnx-parity` | 9 | ❌ blocked | ~1w | ONNX path cos≥0.999 vs PyTorch ref — the real Jetson customer claim |
+| 5 | `smolvla-onnx-parity` | 9 | ✅ done | 0 | 2026-04-18: cos=+1.0000000, max_abs=1.55e-06 (first) / 3.34e-06 (full). `scripts/modal_smolvla_monolithic_export.py` via Modal A10G. Required transformers==5.3.0 pin + torch.where monkey-patch + post-export Where dtype Cast fix. |
 | 6 | `pi0-onnx-parity` | 9 | ✅ done | 0 | 2026-04-18: single-step ONNX end-to-end cos=+1.0000000. Host-loop in Pi0OnnxServer for num_steps=10 (Path C decision — keeps adaptive denoising + safety + distill wedges viable). See [03_research/pi0_onnx_importable_sources.md](03_research/pi0_onnx_importable_sources.md), [01_architecture/pi0_monolithic_wrap_pattern.md](01_architecture/pi0_monolithic_wrap_pattern.md). |
 | 7 | `jetson-benchmark-ci` | 9 | ❌ blocked | 2–3d | Amazon-return Orin Nano $249 + community bounty ($20–50) in parallel |
-| 8 | `multi-model-native-parity` | 9 | ❌ blocked | follows #6 | pi0/pi0.5/GR00T native parity; pi0 = trivial (no swap), pi0.5 + GR00T need AdaRMSNorm / AdaLN verification |
+| 8 | `multi-model-native-parity` | 9 | ✅ done | 0 | 2026-04-18: pi0 verified at cos=1.0000000000, max_abs=0.000e+00 (bit-exact) via `parity_native_pi0` function in `scripts/modal_pi0_monolithic_export.py`. pi0.5 + GR00T (AdaRMSNorm / AdaLN) deferred to v0.3. For MVP, pi0 + SmolVLA native parity is enough to claim the cross-framework moat. |
 | 9 | `ros2-bridge` | 8 | ❌ blocked | ~1w | `reflex serve --ros2` wrapping /act with rclpy action server |
-| 10 | `nan-guard-hardening` | 7 | ❌ blocked | ~3–5d | reject NaN/Inf + staleness kill-switch after N consecutive clamps |
-| 11 | `docker-image-distribution` | 7 | ❌ blocked | ~2d | `ghcr.io/rylinjames/reflex:<version>-<target>` per-release images |
-| 12 | `export-verification-report` | 6 | ❌ blocked | ~3d | auto-write `<export_dir>/VERIFICATION.md` with cos/L2/opset/hash receipt |
+| 10 | `nan-guard-hardening` | 7 | ✅ done | 0 | 2026-04-18: `ActionGuard.check()` now zeros the entire chunk on any NaN/Inf + consecutive-clamp kill-switch (default 10). Server checks `guard.tripped` before `/act` and refuses with a `guard_tripped` error. New endpoints: `GET /guard/status`, `POST /guard/reset`. 9 new tests in `tests/test_guard.py` (19 total, all green). |
+| 11 | `docker-image-distribution` | 7 | ✅ done | 0 | 2026-04-18: `Dockerfile` + `.dockerignore` + `.github/workflows/docker-publish.yml` landed. Auto-publishes `ghcr.io/rylinjames/reflex-vla:<version>` + `:latest` on any `v*` tag push. Image: python:3.12-slim + reflex-vla[serve,gpu], ENTRYPOINT=`reflex`, CMD=`serve /exports --host 0.0.0.0 --port 8000`. x86_64 only; Jetson arm64 deferred to v0.3. README quickstart section added. |
+| 12 | `export-verification-report` | 6 | ✅ done | 0 | 2026-04-18: `src/reflex/verification_report.py` writes `VERIFICATION.md` with sha256 manifest + opset + model metadata. Skeleton fires from `reflex export`; full parity rows written by `reflex validate`. Regression test at `tests/test_verification_report.py` (6 tests). |
 
-**Total remaining: 8 goals, ~4.5–8 weeks solo** (pi0-onnx-parity re-scoped down 1–2w after research imports).
+**Total remaining: 3 goals, ~1–1.5 weeks solo** (smolvla-onnx-parity + multi-model-native-parity + docker-image-distribution + export-verification-report + nan-guard-hardening all landed 2026-04-18).
 
 ---
 

@@ -129,6 +129,7 @@ class ActionGuard:
         mode: str = "clamp",
         log_dir: str | Path | None = None,
         model_version: str = "unknown",
+        max_consecutive_clamps: int = 10,
     ):
         """
         Args:
@@ -136,6 +137,10 @@ class ActionGuard:
             mode: "clamp" (adjust to nearest safe value) or "reject" (return zeros)
             log_dir: Directory for EU AI Act compliance logs (None = no logging)
             model_version: Model identifier for audit trail
+            max_consecutive_clamps: After N consecutive chunks that required
+                clamping or contained NaN/Inf, the guard "trips" — `tripped`
+                becomes True and callers (e.g. `reflex serve`) should stop
+                serving actions until `reset()` is called. Set to 0 to disable.
         """
         self.limits = limits
         self.mode = mode
@@ -144,6 +149,10 @@ class ActionGuard:
         if self._log_dir:
             self._log_dir.mkdir(parents=True, exist_ok=True)
         self._inference_count = 0
+        self.max_consecutive_clamps = max_consecutive_clamps
+        self._consecutive_clamps = 0
+        self._tripped = False
+        self._trip_reason: str | None = None
 
     @classmethod
     def from_urdf(cls, urdf_path: str | Path, **kwargs) -> ActionGuard:
@@ -198,23 +207,93 @@ class ActionGuard:
 
         Returns:
             (safe_actions, results) where safe_actions is the clamped/rejected array
+
+        Non-finite handling: any NaN or Inf in the input array is a hard reject
+        — the whole chunk is replaced with zeros and a single violation record
+        is appended (not per-joint). This counts as a "clamp event" for the
+        consecutive-clamp kill-switch.
         """
         results = []
-        safe_actions = actions.copy()
+        non_finite_mask = ~np.isfinite(actions)
+        had_non_finite = bool(non_finite_mask.any())
 
-        for i in range(len(actions)):
-            result = self.check_single(actions[i])
-            results.append(result)
-            safe_actions[i] = np.array(result.safe_action)
+        if had_non_finite:
+            num_bad = int(non_finite_mask.sum())
+            safe_actions = np.zeros_like(actions)
+            violation_msg = (
+                f"non_finite_action: {num_bad} NaN/Inf value(s) detected — "
+                f"entire chunk zeroed"
+            )
+            check_result = SafetyCheckResult(
+                safe=False,
+                violations=[violation_msg],
+                clamped=True,
+                original_action=actions[0].tolist() if len(actions) else [],
+                safe_action=safe_actions[0].tolist() if len(safe_actions) else [],
+                check_time_ms=0.0,
+            )
+            results.append(check_result)
+            all_violations = [violation_msg]
+            chunk_clamped = True
+        else:
+            safe_actions = actions.copy()
+            for i in range(len(actions)):
+                result = self.check_single(actions[i])
+                results.append(result)
+                safe_actions[i] = np.array(result.safe_action)
+            all_violations = [v for r in results for v in r.violations]
+            chunk_clamped = any(r.clamped for r in results)
 
-        all_violations = [v for r in results for v in r.violations]
-
-        # Log for EU AI Act compliance
         if self._log_dir:
-            self._log_inference(actions, safe_actions, all_violations, any(r.clamped for r in results))
+            self._log_inference(actions, safe_actions, all_violations, chunk_clamped)
+
+        # Consecutive-clamp kill-switch
+        if self.max_consecutive_clamps > 0:
+            if chunk_clamped:
+                self._consecutive_clamps += 1
+                if self._consecutive_clamps >= self.max_consecutive_clamps and not self._tripped:
+                    self._tripped = True
+                    self._trip_reason = (
+                        f"consecutive_clamp_limit_exceeded: "
+                        f"{self._consecutive_clamps} chunks in a row required "
+                        f"clamping or contained NaN/Inf (limit "
+                        f"{self.max_consecutive_clamps})"
+                    )
+                    logger.error(self._trip_reason)
+            else:
+                self._consecutive_clamps = 0
 
         self._inference_count += 1
         return safe_actions, results
+
+    @property
+    def tripped(self) -> bool:
+        """True when the consecutive-clamp kill-switch has fired.
+
+        Callers (e.g. `reflex serve`) should stop serving actions and raise a
+        loud error until `reset()` is called.
+        """
+        return self._tripped
+
+    @property
+    def trip_reason(self) -> str | None:
+        """Human-readable reason the guard tripped, or None if not tripped."""
+        return self._trip_reason
+
+    @property
+    def consecutive_clamps(self) -> int:
+        """Current count of consecutive clamped or NaN/Inf-rejected chunks."""
+        return self._consecutive_clamps
+
+    def reset(self) -> None:
+        """Clear the tripped state and consecutive-clamp counter.
+
+        Call after investigating the upstream cause (bad inputs, model drift,
+        sensor failure, etc.) and confirming it's safe to resume.
+        """
+        self._tripped = False
+        self._trip_reason = None
+        self._consecutive_clamps = 0
 
     def _log_inference(
         self,

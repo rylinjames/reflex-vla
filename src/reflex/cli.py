@@ -272,6 +272,14 @@ def export(
     total_elapsed = time.perf_counter() - start
     console.print(f"\n[bold]Total export: {total_elapsed:.1f}s[/bold]")
     console.print(f"  Output: {output}")
+
+    try:
+        from reflex.verification_report import write_verification_report
+        report_path = write_verification_report(output, parity=None)
+        console.print(f"  [dim]Verification manifest: {report_path}[/dim]")
+    except Exception as exc:
+        console.print(f"[yellow]Verification manifest skipped: {exc}[/yellow]")
+
     console.print(f"\n  [dim]Run on target hardware:[/dim]")
     console.print(f"  [cyan]reflex bench {output}[/cyan]")
 
@@ -479,6 +487,15 @@ def validate(
         sum_table.add_row("seed", str(result.get("seed")))
         sum_table.add_row("threshold", str(result.get("threshold")))
         console.print(sum_table)
+
+    try:
+        from reflex.verification_report import write_verification_report
+        report_path = write_verification_report(export_dir, parity=result)
+        if not output_json:
+            console.print(f"  [dim]Updated verification receipt: {report_path}[/dim]")
+    except Exception as exc:
+        if not output_json:
+            console.print(f"[yellow]Verification receipt update skipped: {exc}[/yellow]")
 
     raise typer.Exit(0 if passed else 1)
 

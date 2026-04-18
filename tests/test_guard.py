@@ -117,3 +117,87 @@ class TestActionGuard:
         action = np.random.randn(6).astype(np.float32)
         result = guard.check_single(action)
         assert result.check_time_ms < 1.0  # Sub-millisecond
+
+
+class TestNanGuard:
+    """NaN/Inf rejection tests — any non-finite value → whole chunk zeroed."""
+
+    def test_nan_action_is_zeroed(self):
+        guard = ActionGuard.default(num_joints=3)
+        actions = np.array([[0.1, np.nan, 0.3]])
+        safe, results = guard.check(actions)
+        assert np.all(safe == 0.0)
+        assert not results[0].safe
+        assert any("non_finite" in v for v in results[0].violations)
+        assert results[0].clamped
+
+    def test_inf_action_is_zeroed(self):
+        guard = ActionGuard.default(num_joints=3)
+        actions = np.array([[0.1, 0.2, np.inf]])
+        safe, results = guard.check(actions)
+        assert np.all(safe == 0.0)
+        assert not results[0].safe
+
+    def test_neg_inf_action_is_zeroed(self):
+        guard = ActionGuard.default(num_joints=2)
+        actions = np.array([[-np.inf, 0.0], [0.1, 0.2]])
+        safe, _ = guard.check(actions)
+        # ENTIRE chunk zeroed when any element non-finite
+        assert np.all(safe == 0.0)
+
+    def test_clean_action_passes_through(self):
+        guard = ActionGuard.default(num_joints=3)
+        actions = np.array([[0.1, 0.2, 0.3]])
+        safe, results = guard.check(actions)
+        np.testing.assert_allclose(safe, actions)
+        assert results[0].safe
+
+
+class TestKillSwitch:
+    """Consecutive-clamp kill-switch: after N clamps, guard trips."""
+
+    def test_trips_after_max_consecutive_clamps(self):
+        guard = ActionGuard.default(num_joints=2, max_consecutive_clamps=3)
+        bad = np.array([[10.0, 10.0]])  # out of bounds → clamps
+        assert not guard.tripped
+        guard.check(bad)
+        assert guard.consecutive_clamps == 1
+        assert not guard.tripped
+        guard.check(bad)
+        assert guard.consecutive_clamps == 2
+        assert not guard.tripped
+        guard.check(bad)
+        assert guard.consecutive_clamps == 3
+        assert guard.tripped
+        assert "consecutive_clamp_limit_exceeded" in guard.trip_reason
+
+    def test_clean_chunk_resets_counter(self):
+        guard = ActionGuard.default(num_joints=2, max_consecutive_clamps=5)
+        bad = np.array([[10.0, 10.0]])
+        clean = np.array([[0.1, 0.1]])
+        guard.check(bad)
+        guard.check(bad)
+        assert guard.consecutive_clamps == 2
+        guard.check(clean)
+        assert guard.consecutive_clamps == 0
+
+    def test_nan_chunk_counts_toward_kill_switch(self):
+        guard = ActionGuard.default(num_joints=2, max_consecutive_clamps=2)
+        guard.check(np.array([[np.nan, 0.1]]))
+        guard.check(np.array([[np.inf, 0.1]]))
+        assert guard.tripped
+
+    def test_reset_clears_tripped(self):
+        guard = ActionGuard.default(num_joints=2, max_consecutive_clamps=1)
+        guard.check(np.array([[10.0, 10.0]]))
+        assert guard.tripped
+        guard.reset()
+        assert not guard.tripped
+        assert guard.trip_reason is None
+        assert guard.consecutive_clamps == 0
+
+    def test_disabled_kill_switch(self):
+        guard = ActionGuard.default(num_joints=2, max_consecutive_clamps=0)
+        for _ in range(100):
+            guard.check(np.array([[10.0, 10.0]]))
+        assert not guard.tripped
