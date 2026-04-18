@@ -118,7 +118,19 @@ def apply_export_patches() -> None:
             except ImportError:
                 pass
 
-    # create_causal_mask -> None (see _CCM_NONE_RATIONALE)
+    # create_causal_mask -> None. Bypasses the mask rebuild that would
+    # trigger the 835->886 broadcast error under torch.export FakeTensor
+    # tracing with num_steps>1.
+    #
+    # Semantic impact is backbone-specific:
+    # - SmolVLA (SmolLM2 path): free, cos=1.0 preserved at machine precision.
+    # - pi0 (PaliGemma + Gemma): skips prefix-pad masking, cos drops to
+    #   ~0.977 at num_steps=10. v0.3 fix requires patching Gemma's inner
+    #   attention (not create_causal_mask) — a 2026-04-19 investigation
+    #   confirmed the 4D mask pi0 builds ([1,1,51,886]) is already
+    #   [1,1,51,835] by the time it reaches create_causal_mask under
+    #   tracing. The torch.cat of prefix+suffix masks doesn't survive
+    #   FakeTensor propagation. See 01_architecture/pi0_monolithic_wrap_pattern.md
     from transformers import masking_utils
 
     def _ccm_shim(*args, **kwargs):

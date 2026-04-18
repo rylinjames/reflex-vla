@@ -118,11 +118,11 @@ def _apply_patches():
             except ImportError:
                 pass
 
-    # create_causal_mask: returning None bypasses transformers' prefix-only
-    # mask rebuild that fails under num_steps>1 (the 835 -> 886 broadcast
-    # error — mask shape mismatches actual K after suffix is added). Semantic
-    # cost: prefix pad positions aren't masked, cos drops from 1.0 to ~0.977.
-    # Same compromise as the pi0 script — tracked for v0.3 deep fix.
+    # create_causal_mask -> None bypasses the mask rebuild that fails
+    # under FakeTensor tracing with num_steps>1. Semantic cost is
+    # backbone-specific (SmolLM2: free → cos=1.0; PaliGemma: cos=0.977).
+    # See 01_architecture/pi0_monolithic_wrap_pattern.md for the 2026-04-19
+    # investigation and v0.3 fix plan.
     from transformers import masking_utils
 
     def _ccm_shim(*args, **kwargs):

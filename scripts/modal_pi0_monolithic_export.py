@@ -184,17 +184,17 @@ def export_pi0_monolithic_modal(
     _orig_ccm = masking_utils.create_causal_mask
 
     def _ccm_shim(*args, **kwargs):
-        # Returning None from create_causal_mask bypasses transformers'
-        # mask-rebuild step, which otherwise tries to shape a prefix-only
-        # [1,1,51,835] mask against [1,8,51,886] attention scores (pi0's
-        # suffix pushes K from 835 to 886). That broadcast fails under
-        # torch.export FakeTensor tracing with num_steps>1.
+        # 2026-04-18/19 investigation: attempted 4D-passthrough to preserve
+        # prefix-pad masking and get pi0 to cos=1.0 at num_steps=10. Found
+        # that pi0's denoise_step builds a [1,1,51,886] mask BUT by the time
+        # it reaches create_causal_mask's input it's already [1,1,51,835] —
+        # the torch.cat of prefix+suffix masks doesn't survive FakeTensor
+        # tracing correctly. Deeper fix requires patching Gemma's inner
+        # attention (not create_causal_mask). Tracked for v0.3 in
+        # reflex_context/01_architecture/pi0_monolithic_wrap_pattern.md.
         #
-        # Semantic cost: pad positions in the prefix are no longer masked
-        # → cos drops from 1.0 to ~0.977 vs canonical PyTorch. Documented
-        # in measured_numbers.md. Getting to cos=1.0 requires patching
-        # Gemma's inner attention forward to use pi0's explicit 4D mask
-        # directly, bypassing transformers' mask rebuild — tracked for v0.3.
+        # For now: return None so export completes (cos=0.977 approximation,
+        # documented). SmolVLA is unaffected (cos=1.0 preserved).
         if "inputs_embeds" in kwargs and "input_embeds" not in kwargs:
             kwargs["input_embeds"] = kwargs.pop("inputs_embeds")
         return None
