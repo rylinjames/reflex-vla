@@ -1,0 +1,34 @@
+{
+  "date": "2026-04-18",
+  "reproducer": "modal run scripts/modal_{pi0,smolvla}_monolithic_export.py --quality  (for the PyTorch num_steps=1 vs num_steps=10 characterization)",
+  "note": "Two separate measurements. (1) quality — PyTorch-only: num_steps=1 vs num_steps=10 sample_actions output drift (both are PyTorch eager, same mask behavior). (2) shipped_num_steps10 — our monolithic ONNX at num_steps=10 vs PyTorch sample_actions(num_steps=10). The shipped ONNX uses a create_causal_mask=None shim to unblock torch.export, which costs cos parity (0.977 vs 1.0). v0.3 target: restore cos=1.0 by patching Gemma's inner attention forward to use the 4D explicit mask pi0 constructs.",
+  "quality_num_steps_1_vs_10": {
+    "smolvla": {
+      "first_cos": 0.783553,
+      "first_max_abs": 0.578,
+      "full_cos": 0.766007,
+      "full_max_abs": 1.14,
+      "action_range": 2.609,
+      "relative_max_abs": 0.2215
+    },
+    "pi0": {
+      "first_cos": 0.897075,
+      "first_max_abs": 0.872,
+      "first_l2": 2.437,
+      "full_cos": 0.890676,
+      "full_max_abs": 1.388,
+      "full_l2": 16.07,
+      "action_range": 1.930,
+      "relative_max_abs": 0.4519
+    }
+  },
+  "shipped_num_steps10_onnx_vs_pytorch_num_steps10": {
+    "pi0": {
+      "first_cos": 0.977058,
+      "first_max_abs": 0.131,
+      "full_max_abs": 0.248,
+      "verdict": "ship with approximation disclosure"
+    },
+    "smolvla": {"status": "export running at time of writing"}
+  }
+}

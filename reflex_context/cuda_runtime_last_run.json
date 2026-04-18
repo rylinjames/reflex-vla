@@ -1,0 +1,18 @@
+{
+  "date": "2026-04-18",
+  "reproducer": "modal run scripts/modal_{pi0,smolvla}_monolithic_export.py --cuda",
+  "models": {
+    "pi0": {
+      "cos": 0.99999994,
+      "max_abs": 8.74e-04,
+      "used_provider": "CUDAExecutionProvider",
+      "verdict": "PASS"
+    },
+    "smolvla": {
+      "cos": 0.99999961,
+      "max_abs": 1.19e-03,
+      "used_provider": "CUDAExecutionProvider",
+      "verdict": "PASS"
+    }
+  }
+}

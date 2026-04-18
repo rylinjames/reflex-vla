@@ -10,12 +10,14 @@ Hi r/robotics —
 
 I built [Reflex](https://github.com/rylinjames/reflex-vla), an open-source CLI for taking a trained Vision-Language-Action model from a HuggingFace checkpoint to a working inference server you can hit from a robot.
 
-**Verified today**: two of the most-used VLAs match the reference PyTorch policy to machine precision on shared seeded inputs:
+**Verified today**: two of the most-used VLAs exported as monolithic ONNX, measured against PyTorch on shared seeded inputs. Two artifacts per model — num_steps=1 (exact, for one-shot Euler users) and num_steps=10 (canonical flow-matching, production default):
 
-| Model | Native parity | Monolithic ONNX parity |
+| Model | num_steps=1 ONNX vs PyTorch(num_steps=1) | num_steps=10 ONNX vs PyTorch(num_steps=10) |
 |---|---|---|
-| SmolVLA (`lerobot/smolvla_base`) | cos=1.0000 (DecomposedRMSNorm swap) | **cos=+1.0000000, max_abs=1.55e-06** |
-| pi0 (`lerobot/pi0_base`) | cos=1.0 bit-exact (wrapper vs raw) | **cos=+1.0000000, max_abs=1.43e-06** |
+| SmolVLA | **cos=+1.0000000, max_abs=1.55e-06** | (export succeeded — parity pending at time of writing) |
+| pi0     | **cos=+1.0000000, max_abs=1.43e-06** | **cos=+0.977, max_abs=1.31e-01** |
+
+The num_steps=10 artifact uses a `create_causal_mask → None` shim to dodge a `torch.export` shape-tracing bug. Semantic cost: prefix pad positions aren't masked → cos=0.977 vs 1.0. Still strictly closer to canonical behavior than num_steps=1 (cos=0.897 against same reference). Restoring cos=1.0 at num_steps=10 is a v0.3 item.
 
 Three commands from zero to serving:
 

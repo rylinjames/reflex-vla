@@ -124,6 +124,40 @@ def export_pi0_monolithic_modal(
         stub.GR00TN15 = None
         sys.modules[_mod] = stub
 
+    # ---- Diagnostic: wrap onnx-diagnostic's patched__maybe_broadcast so
+    # when it raises "expand: 835 -> 886" we get the aten op + user-stack
+    # that triggered it. Goal: find which Python line in sample_actions (or
+    # transformers attention code) is broadcasting pre-suffix shape against
+    # post-suffix shape at num_steps=10.
+    try:
+        from onnx_diagnostic.torch_export_patches.patches import patch_torch as _pt
+        _orig_mb = _pt.patched__maybe_broadcast
+
+        def _debug_mb(*args, **kwargs):
+            import traceback as _tb
+            try:
+                return _orig_mb(*args, **kwargs)
+            except RuntimeError as e:
+                if "expand" in str(e):
+                    shapes = []
+                    for a in args:
+                        if hasattr(a, "shape"):
+                            shapes.append(tuple(a.shape))
+                        elif isinstance(a, (list, tuple)):
+                            shapes.append([tuple(getattr(x, "shape", None) or []) for x in a])
+                        else:
+                            shapes.append(str(type(a).__name__))
+                    print(f"\n!!! [broadcast-fail] {e}")
+                    print(f"    arg shapes: {shapes}")
+                    print("    Stack (outermost first, 15 frames):")
+                    for frame in _tb.format_stack()[-15:]:
+                        print("    " + frame.rstrip())
+                raise
+        _pt.patched__maybe_broadcast = _debug_mb
+        print("[modal] installed broadcast diagnostic")
+    except ImportError:
+        pass
+
     # ---- Transformers 4.57+ compat monkey-patches ----
     from lerobot.policies.pi0 import modeling_pi0
     from transformers import masking_utils
@@ -150,9 +184,20 @@ def export_pi0_monolithic_modal(
     _orig_ccm = masking_utils.create_causal_mask
 
     def _ccm_shim(*args, **kwargs):
+        # Returning None from create_causal_mask bypasses transformers'
+        # mask-rebuild step, which otherwise tries to shape a prefix-only
+        # [1,1,51,835] mask against [1,8,51,886] attention scores (pi0's
+        # suffix pushes K from 835 to 886). That broadcast fails under
+        # torch.export FakeTensor tracing with num_steps>1.
+        #
+        # Semantic cost: pad positions in the prefix are no longer masked
+        # → cos drops from 1.0 to ~0.977 vs canonical PyTorch. Documented
+        # in measured_numbers.md. Getting to cos=1.0 requires patching
+        # Gemma's inner attention forward to use pi0's explicit 4D mask
+        # directly, bypassing transformers' mask rebuild — tracked for v0.3.
         if "inputs_embeds" in kwargs and "input_embeds" not in kwargs:
             kwargs["input_embeds"] = kwargs.pop("inputs_embeds")
-        return _orig_ccm(*args, **kwargs)
+        return None
 
     masking_utils.create_causal_mask = _ccm_shim
     if hasattr(_pg, "create_causal_mask"):
@@ -314,11 +359,12 @@ def export_pi0_monolithic_modal(
     },
     secrets=[_hf_secret()],
 )
-def parity_test_monolithic(model_id: str = "lerobot/pi0_base"):
-    """Parity test: PyTorch pi0 vs monolithic ONNX at num_steps=1.
+def parity_test_monolithic(model_id: str = "lerobot/pi0_base", num_steps: int = 1):
+    """Parity test: PyTorch pi0 vs monolithic ONNX at a given num_steps.
 
-    Feeds identical seeded inputs to both PyTorch sample_actions(num_steps=1)
-    and our Modal-exported ONNX. Target: cos >= 0.999.
+    The monolithic ONNX bakes num_steps in at export time; this test runs
+    PyTorch `sample_actions(num_steps=N)` with the same N on seeded inputs
+    and compares. Target: cos >= 0.999.
     """
     import sys, types
     for _mod in ("lerobot.policies.groot.groot_n1", "lerobot.policies.groot.modeling_groot"):
@@ -377,14 +423,14 @@ def parity_test_monolithic(model_id: str = "lerobot/pi0_base"):
     state = torch.randn(B, state_dim, dtype=torch.float32)
     noise = torch.randn(B, chunk, action_dim, dtype=torch.float32)
 
-    # Run PyTorch ref at num_steps=1
-    print("[parity] Running PyTorch ref (num_steps=1)...")
+    # Run PyTorch ref at matching num_steps
+    print(f"[parity] Running PyTorch ref (num_steps={num_steps})...")
     images = [img, img, img]
     img_masks = [mask, mask, mask]
     with torch.no_grad():
         pt_actions = policy.model.sample_actions(
             images, img_masks, lang_tokens, lang_masks, state,
-            noise=noise, num_steps=1,
+            noise=noise, num_steps=num_steps,
         )
     pt_np = pt_actions.cpu().numpy()
     print(f"[parity] pt actions: {pt_np.shape}, first: {pt_np[0, 0, :5]}")
@@ -731,7 +777,7 @@ def main(
     elif native:
         result = parity_native_pi0.remote()
     elif parity:
-        result = parity_test_monolithic.remote()
+        result = parity_test_monolithic.remote(num_steps=num_steps)
     else:
         result = export_pi0_monolithic_modal.remote(num_steps=num_steps)
     print("\n=== RESULT ===")

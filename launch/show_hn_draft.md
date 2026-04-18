@@ -10,7 +10,10 @@ Hi HN —
 
 I built Reflex because the path from "we have a trained Vision-Language-Action model" to "it runs on a real robot" is painful. Every VLA team writes their own export pipeline. Most break silently under FP16 / TRT / Jetson constraints.
 
-**What's verified today:** I export two of the most-used open VLAs — SmolVLA (HuggingFace LeRobot) and pi0 (Physical Intelligence, via lerobot) — as monolithic ONNX that matches the reference PyTorch policy to **cos = +1.0000000** end-to-end on shared seeded inputs. Max abs diff: 1.43e-06 (pi0), 1.55e-06 (SmolVLA). The reproducer is one Modal command.
+**What's verified today:** I export two of the most-used open VLAs — SmolVLA (HuggingFace LeRobot) and pi0 (Physical Intelligence, via lerobot) — as monolithic ONNX. Two numbers matter:
+
+- **num_steps=1 artifact**: cos = +1.0000000 vs PyTorch `sample_actions(num_steps=1)`. Machine precision (max abs 1.43e-06 for pi0, 1.55e-06 for SmolVLA).
+- **num_steps=10 artifact (the canonical flow-matching denoise)**: cos = +0.977 vs PyTorch `sample_actions(num_steps=10)`. Uses a `create_causal_mask → None` shim to dodge a `torch.export` shape-tracing bug — semantic cost is prefix pad positions aren't masked. Restoring cos=1.0 here is a v0.3 item; the cos=0.977 artifact is still strictly closer to canonical behavior than num_steps=1 (which is 0.897 against the same reference).
 
 ```bash
 pip install 'reflex-vla[serve,gpu] @ git+https://github.com/rylinjames/reflex-vla'

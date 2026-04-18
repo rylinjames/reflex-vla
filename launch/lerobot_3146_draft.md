@@ -21,13 +21,20 @@ Repo: https://github.com/rylinjames/reflex-vla
 
 ### What's actually verified
 
-Monolithic `torch.export` → `torch.onnx.export` path matches the reference `{PI0,SmolVLA}Pytorch.sample_actions(num_steps=1)` forward to machine precision on shared seeded inputs:
+Two ONNX artifacts per model, both measured against PyTorch on shared seeded inputs:
 
-- **SmolVLA monolithic ONNX**: first-action cos=+1.0000000, max_abs=1.55e-06; full-chunk cos=+1.0000000, max_abs=3.34e-06
-- **pi0 monolithic ONNX** (12.5GB, Gemma-2b backbone + Gemma-300m expert): first-action cos=+1.0000000, max_abs=1.43e-06; full-chunk cos=+1.0000000, max_abs=2.98e-06
-- **pi0 native path**: `PI0Policy.predict_action_chunk` wrapper vs raw `sample_actions` = bit-exact (max_abs = 0.0)
+**num_steps=1 (exact)**: monolithic ONNX bakes one big Euler step with `dt=-1.0`. Matches PyTorch `sample_actions(num_steps=1)` to machine precision.
+- SmolVLA: cos=+1.0000000, max_abs=1.55e-06 (full-chunk max_abs=3.34e-06)
+- pi0: cos=+1.0000000, max_abs=1.43e-06 (full-chunk max_abs=2.98e-06)
 
-Exporter uses onnx-diagnostic's `torch_export_patches(patch_transformers=True)` under `transformers==5.3.0` (5.4+ has a `q_length` scalar regression in `masking_utils.sdpa_mask`). Reproducers are `scripts/modal_{pi0,smolvla}_monolithic_export.py --parity`.
+**num_steps=10 (canonical flow-matching, recommended default)**: unrolls the 10-step Euler loop at trace time. Uses a `create_causal_mask → None` shim to unblock a `torch.export` shape-tracing bug (835 -> 886 broadcast on suffix-extended K); semantic cost is prefix pad positions aren't masked.
+- pi0: cos=+0.977 vs `sample_actions(num_steps=10)`, max_abs=1.31e-01
+- Still strictly closer to canonical than num_steps=1 (cos=0.897 against same reference)
+- Restoring cos=1.0 at num_steps=10 is a v0.3 item — needs a Gemma inner-attention patch
+
+**pi0 native-path sanity**: `PI0Policy.predict_action_chunk` wrapper vs raw `sample_actions` = bit-exact (max_abs = 0.0).
+
+Exporter uses onnx-diagnostic's `torch_export_patches(patch_transformers=True)` under `transformers==5.3.0` (5.4+ has a `q_length` scalar regression). Reproducers: `scripts/modal_{pi0,smolvla}_monolithic_export.py --num-steps {1,10} --parity`.
 
 ### How to try it
 

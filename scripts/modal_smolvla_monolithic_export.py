@@ -118,14 +118,17 @@ def _apply_patches():
             except ImportError:
                 pass
 
-    # create_causal_mask kwarg rename (inputs_embeds -> input_embeds)
+    # create_causal_mask: returning None bypasses transformers' prefix-only
+    # mask rebuild that fails under num_steps>1 (the 835 -> 886 broadcast
+    # error — mask shape mismatches actual K after suffix is added). Semantic
+    # cost: prefix pad positions aren't masked, cos drops from 1.0 to ~0.977.
+    # Same compromise as the pi0 script — tracked for v0.3 deep fix.
     from transformers import masking_utils
-    _orig_ccm = masking_utils.create_causal_mask
 
     def _ccm_shim(*args, **kwargs):
         if "inputs_embeds" in kwargs and "input_embeds" not in kwargs:
             kwargs["input_embeds"] = kwargs.pop("inputs_embeds")
-        return _orig_ccm(*args, **kwargs)
+        return None
     masking_utils.create_causal_mask = _ccm_shim
     try:
         from lerobot.policies import pi_gemma as _pg

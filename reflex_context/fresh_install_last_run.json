@@ -1,0 +1,14 @@
+{
+  "date": "2026-04-18",
+  "passed": true,
+  "results": {"help": 0, "targets": 0, "imports": 0},
+  "repo_commit": "9de452f",
+  "modal_image_build_s": 118.55,
+  "checks": [
+    "pip install 'reflex-vla[serve,onnx] @ git+https://github.com/rylinjames/reflex-vla.git' succeeded on python:3.12-slim + git",
+    "reflex --help returned 0",
+    "reflex targets listed hardware profiles",
+    "imports of reflex.runtime.server, reflex.verification_report, reflex.safety.guard all succeeded"
+  ],
+  "reproducer": "modal run scripts/modal_fresh_install_test.py"
+}

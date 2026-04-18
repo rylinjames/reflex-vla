@@ -171,16 +171,19 @@ Each wedge works standalone for scripting, and every wedge that belongs in the i
 
 ## Verified parity (the only load-bearing numbers)
 
-Both SmolVLA and pi0 match the reference PyTorch policy to machine precision on shared seeded inputs:
+Two ONNX artifacts per model, measured against PyTorch on shared seeded inputs:
 
-| Model | Path | first-action cos | first-action max_abs | full-chunk cos | full-chunk max_abs |
-|---|---|---|---|---|---|
-| SmolVLA | PyTorch native (DecomposedRMSNorm swap) | 1.0000 | 0.000 | — | — |
-| SmolVLA | Monolithic ONNX (num_steps=1) | **+1.0000000** | **1.55e-06** | **+1.0000000** | **3.34e-06** |
-| pi0 | PyTorch native wrapper vs raw sample_actions | **1.0000000000** | **0.000e+00 (bit-exact)** | 1.0 | 0.0 |
-| pi0 | Monolithic ONNX (num_steps=1) | **+1.0000000** | **1.43e-06** | **+1.0000000** | **2.98e-06** |
+| Artifact | Reference | first-action cos | first-action max_abs |
+|---|---|---|---|
+| SmolVLA ONNX, num_steps=1 | `sample_actions(num_steps=1)` | **+1.0000000** | **1.55e-06** |
+| pi0 ONNX, num_steps=1 | `sample_actions(num_steps=1)` | **+1.0000000** | **1.43e-06** |
+| **pi0 ONNX, num_steps=10** (recommended default) | `sample_actions(num_steps=10)` | **+0.977058** | **1.31e-01** |
+| SmolVLA PyTorch native (DecomposedRMSNorm swap) | reference PyTorch | 1.0000 | 0.000 |
+| pi0 PyTorch native wrapper vs raw `sample_actions` | raw `sample_actions` | 1.0000 | 0.000 (bit-exact) |
 
-Full ledger of verified / unverified / unmeasured numbers: [reflex_context/measured_numbers.md](reflex_context/measured_numbers.md).
+**About the num_steps=10 artifact**: flow-matching VLAs canonically integrate with 10 Euler steps; num_steps=1 does one big step with `dt=-1.0`. The num_steps=10 ONNX is the production default — numerically closer to canonical behavior (cos=0.977 vs 0.897 for num_steps=1 against the same reference). It uses a `create_causal_mask → None` shim to work around a shape-tracing bug in `torch.export` that prevented the original num_steps=10 export (documented in `reflex_context/01_architecture/pi0_monolithic_wrap_pattern.md`). The shim's semantic cost: prefix pad positions aren't masked. Restoring cos=1.0 at num_steps=10 requires a deeper Gemma-attention patch and is tracked for v0.3.
+
+Full ledger: [reflex_context/measured_numbers.md](reflex_context/measured_numbers.md).
 
 **Latency numbers are intentionally not in the README yet** — earlier TRT FP16 tables were measured on a now-abandoned decomposed-ONNX path. Desktop GPU + Jetson latency re-measurement is tracked for v0.3. `reflex bench <export_dir>` reproduces on any hardware.
 
