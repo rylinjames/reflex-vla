@@ -174,6 +174,26 @@ goals:
     check: "test -f tests/test_ros2_bridge_live.py && .venv/bin/python -m pytest tests/test_ros2_bridge_live.py -q 2>/dev/null"
     weight: 7
 
+  - id: cli-export-end-to-end
+    description: "`reflex export <hf_id> --output <dir>` from the installed CLI produces a working export directory: reflex_config.json + model.onnx (or the legal decomposed-stage files) + VERIFICATION.md. Verifies the customer's first command from the README actually works — not just the Modal export scripts. If the CLI still routes to an abandoned decomposed exporter, this catches it before launch."
+    check: "test -f tests/test_cli_export_end_to_end.py && .venv/bin/python -m pytest tests/test_cli_export_end_to_end.py -q 2>/dev/null"
+    weight: 9
+
+  - id: serve-act-roundtrip
+    description: "`reflex serve <export_dir>` boots and an HTTP POST /act with image+instruction+state returns a valid action chunk (shape [chunk, action_dim], all-finite). Closes the loop between export + server code — we have ONNX parity but have never actually served a request end-to-end through the FastAPI layer."
+    check: "test -f tests/test_serve_act_roundtrip.py && .venv/bin/python -m pytest tests/test_serve_act_roundtrip.py -q 2>/dev/null"
+    weight: 9
+
+  - id: runtime-num-steps-10
+    description: "Reflex runtime (`ReflexServer` / `Pi0OnnxServer` / `SmolVLANativeServer`) correctly serves the num_steps=10 monolithic ONNX. Current servers were written assuming num_steps=1; need to verify the num_steps=10 artifact's I/O contract (inputs, action chunk shape, noise handling) is compatible or the runtime is updated."
+    check: "test -f tests/test_runtime_num_steps_10.py && .venv/bin/python -m pytest tests/test_runtime_num_steps_10.py -q 2>/dev/null"
+    weight: 8
+
+  - id: guard-trip-integration
+    description: "ActionGuard kill-switch integration: when max_consecutive_clamps is hit in a live `reflex serve`, POST /act returns the `guard_tripped` error (not actions), and POST /guard/reset clears the state. Verifies the full path from unit-tested guard → live HTTP behavior."
+    check: "test -f tests/test_guard_trip_integration.py && .venv/bin/python -m pytest tests/test_guard_trip_integration.py -q 2>/dev/null"
+    weight: 7
+
   # ── REGRESSION GATE (runs after every /evolve cycle) ──────────────
 
   - id: native-path-parity
