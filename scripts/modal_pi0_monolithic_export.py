@@ -184,24 +184,94 @@ def export_pi0_monolithic_modal(
     _orig_ccm = masking_utils.create_causal_mask
 
     def _ccm_shim(*args, **kwargs):
-        # 2026-04-18/19 investigation: attempted 4D-passthrough to preserve
-        # prefix-pad masking and get pi0 to cos=1.0 at num_steps=10. Found
-        # that pi0's denoise_step builds a [1,1,51,886] mask BUT by the time
-        # it reaches create_causal_mask's input it's already [1,1,51,835] —
-        # the torch.cat of prefix+suffix masks doesn't survive FakeTensor
-        # tracing correctly. Deeper fix requires patching Gemma's inner
-        # attention (not create_causal_mask). Tracked for v0.3 in
-        # reflex_context/01_architecture/pi0_monolithic_wrap_pattern.md.
-        #
-        # For now: return None so export completes (cos=0.977 approximation,
-        # documented). SmolVLA is unaffected (cos=1.0 preserved).
+        # Dispatch: if caller passed a 4D mask (pi0 WITH the F.pad-based
+        # denoise_step patch below), use it — cos=1.0 path. Otherwise
+        # return None to unblock export.
         if "inputs_embeds" in kwargs and "input_embeds" not in kwargs:
             kwargs["input_embeds"] = kwargs.pop("inputs_embeds")
+        attn = kwargs.get("attention_mask")
+        if attn is None and len(args) >= 3:
+            attn = args[2]
+        try:
+            if attn is not None and hasattr(attn, "dim") and attn.dim() == 4:
+                return attn
+        except Exception:
+            pass
         return None
 
     masking_utils.create_causal_mask = _ccm_shim
     if hasattr(_pg, "create_causal_mask"):
         _pg.create_causal_mask = _ccm_shim
+
+    # Patch denoise_step: replace torch.cat of prefix+suffix masks with
+    # F.pad + logical AND. Under torch.export FakeTensor tracing, the cat
+    # loses the suffix dim (mask arrives at attention as [1,1,51,835]
+    # instead of [1,1,51,886]). Two F.pad calls have concrete output size
+    # at every step → mask survives intact. This is the missing piece
+    # that blocked cos=1.0 at num_steps=10.
+    import torch.nn.functional as _F
+    from lerobot.policies.pi0 import modeling_pi0 as _mp0
+    from lerobot.policies.pi0.modeling_pi0 import make_att_2d_masks as _make_att_2d_masks
+
+    _patched_called = [0]
+
+    def _patched_denoise_step(self, state, prefix_pad_masks, past_key_values, x_t, timestep):
+        _patched_called[0] += 1
+        suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(
+            state, x_t, timestep,
+        )
+        suffix_len = suffix_pad_masks.shape[1]
+        batch_size = prefix_pad_masks.shape[0]
+        # CRITICAL: use past_key_values.get_seq_length() (the actual cached
+        # prefix K in attention) NOT prefix_pad_masks.shape[1]. Under tracing
+        # those diverge — prefix_pad_masks.shape[1] can be smaller than the
+        # real cached K, so the built mask's K is smaller than attention's
+        # scores' K, and we get 835->886 broadcast failure.
+        cached_prefix_len = past_key_values.get_seq_length() if past_key_values is not None else 0
+        prefix_len = max(cached_prefix_len, prefix_pad_masks.shape[1])
+
+        # If the cached prefix is longer than prefix_pad_masks, pad with True
+        # (allowed) — the extra positions are the pre-computed prefix the
+        # attention saw but we didn't get pad-mask info for.
+        pad_deficit = prefix_len - prefix_pad_masks.shape[1]
+        prefix_pad_masks_extended = prefix_pad_masks
+        if pad_deficit > 0:
+            prefix_pad_masks_extended = _F.pad(prefix_pad_masks, (0, pad_deficit), value=True)
+
+        prefix_pad_2d_masks = prefix_pad_masks_extended[:, None, :].expand(batch_size, suffix_len, prefix_len)
+        suffix_att_2d_masks = _make_att_2d_masks(suffix_pad_masks, suffix_att_masks)
+
+        # F.pad + AND (replaces torch.cat([..., ...], dim=2) that loses shape under tracing)
+        prefix_allowed = _F.pad(prefix_pad_2d_masks, (0, suffix_len), value=True)
+        suffix_allowed = _F.pad(suffix_att_2d_masks, (prefix_len, 0), value=True)
+        full_att_2d_masks = prefix_allowed & suffix_allowed
+        if _patched_called[0] <= 2:
+            print(f"[patched_denoise_step] call {_patched_called[0]}: "
+                  f"cached_prefix={cached_prefix_len}, "
+                  f"pad_mask_prefix={prefix_pad_masks.shape[1]}, "
+                  f"used_prefix={prefix_len}, suffix={suffix_len}, "
+                  f"full={tuple(full_att_2d_masks.shape)}")
+
+        prefix_offsets = torch.sum(prefix_pad_masks, dim=-1)[:, None]
+        position_ids = prefix_offsets + torch.cumsum(suffix_pad_masks, dim=1) - 1
+
+        full_att_2d_masks_4d = self._prepare_attention_masks_4d(full_att_2d_masks)
+        self.paligemma_with_expert.gemma_expert.model.config._attn_implementation = "eager"
+
+        outputs_embeds, _ = self.paligemma_with_expert.forward(
+            attention_mask=full_att_2d_masks_4d,
+            position_ids=position_ids,
+            past_key_values=past_key_values,
+            inputs_embeds=[None, suffix_embs],
+            use_cache=False,
+            adarms_cond=[None, adarms_cond],
+        )
+        suffix_out = outputs_embeds[1]
+        suffix_out = suffix_out[:, -self.config.chunk_size:]
+        suffix_out = suffix_out.to(dtype=torch.float32)
+        return self.action_out_proj(suffix_out)
+
+    _mp0.PI0Pytorch.denoise_step = _patched_denoise_step
 
     # Patch denoise_step to skip copy.deepcopy(past_key_values) — the deepcopy
     # fails under torch.export FakeTensor tracing ("Cannot access data pointer").
@@ -210,10 +280,25 @@ def export_pi0_monolithic_modal(
     _orig_deepcopy = _copy.deepcopy
 
     def _safe_deepcopy(obj, *args, **kwargs):
-        # Pass-through for DynamicCache during tracing — we're read-only anyway
+        # DynamicCache: create a NEW container with SAME tensor refs (shallow
+        # copy of the internal lists). Pure pass-through fails because if any
+        # downstream code appends (even under use_cache=False, transformers
+        # sometimes mutates during eager attention), the SAME object gets
+        # contaminated across iterations — mask shapes grow across traced
+        # iterations (835→886→937 ...) and broadcast against fixed-size
+        # attention scores fails. Shallow-list-copy fixes this: new container
+        # per iteration, so appends are isolated.
         from transformers.cache_utils import DynamicCache
         if isinstance(obj, DynamicCache):
-            return obj
+            new = DynamicCache()
+            # Shallow copy of the internal lists — new containers, SAME tensor
+            # references. Attention ops that append K/V extend the NEW lists,
+            # leaving the original untouched across traced iterations.
+            if hasattr(obj, "key_cache"):
+                new.key_cache = list(obj.key_cache)
+            if hasattr(obj, "value_cache"):
+                new.value_cache = list(obj.value_cache)
+            return new
         return _orig_deepcopy(obj, *args, **kwargs)
 
     _copy.deepcopy = _safe_deepcopy
