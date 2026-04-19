@@ -71,13 +71,22 @@ These are hermetic — no model load, no Modal. The real parity runs happen on M
 
 ## Rollout
 
-1. Land conversion scaffold + tests (this doc + files).
-2. Trigger Modal FP16 conversion for pi0 (~10 min compute).
-3. Trigger Modal FP16 parity run for pi0 (~3-5 min).
-4. Add measured row to `measured_numbers.md`.
-5. Update README's "Memory fit" table with FP16 numbers and revised Jetson target support.
+1. ✅ Land conversion scaffold + tests (this doc + files).
+2. ✅ Trigger Modal FP16 conversion for pi0 (~10 min compute). **Result: 12.52 GB → 6.26 GB (-50.0%), 224s on Modal CPU.**
+3. ⚠️ Trigger Modal FP16 parity run for pi0 (~3-5 min). **Blocked on ORT limitation: `onnxconverter_common.float16` doesn't insert Cast nodes at FP32/FP16 boundaries, so the FP16 ONNX fails to load in ORT with "Type parameter (T) of Optype (Mul/MatMul) bound to different types". Same on smolvla_libero_fp16. Deployment path (TensorRT engine build) handles FP16 natively and doesn't need the ORT load.**
+4. ✅ Add measured row to `measured_numbers.md`.
+5. (pending) Update README's "Memory fit" table with FP16 numbers.
 6. (Optional) Repeat 2-4 for pi0.5.
-7. (Blocked on hardware) Jetson-side real-device fit test.
+7. (Blocked on hardware) Jetson-side real-device fit test + TRT engine FP16 build.
+
+## Learnings from the conversion pass (2026-04-19)
+
+- **Don't use `ByteSize()` to gate logic on model size** — ByteSize() itself serializes the proto and hits the 2GB limit. Use on-disk size via `_size_with_external()`.
+- **External data rewrite requires explicit unlink of old siblings** — `onnx.save(save_as_external_data=True)` will leave stale `.bin` files alongside the new one if the destination was previously written. Need to `unlink()` first.
+- **`keep_io_types=True` breaks on oversized graphs** — Cast-node wiring gets Mul/Add operand dtypes wrong. For >1.8GB we flip to `keep_io_types=False` (end-to-end FP16; callers cast inputs/outputs).
+- **Op blocklist causes ORT load failures** — blocklisted ops (Pow/ReduceMean/Sqrt) stay FP32, but downstream MatMul/Mul receives FP16 weights → operand dtype mismatch. `convert_float_to_float16` doesn't insert Cast nodes at blocklist boundaries. Empty blocklist is the safer default.
+- **`infer_shapes_path` rehydrates weights to FP32** — calling it post-save undoes the FP16 conversion silently (size went from 1.13 GB back to 2.24 GB). Use value_info-strip instead.
+- **TRT is the Jetson deployment target anyway** — the ORT-FP16 load failure isn't a blocker for production; TRT engine build handles FP16 conversion independently. But ORT-FP16 direct-load would be a nice developer-ergonomic win.
 
 ## Risk / failure modes
 
