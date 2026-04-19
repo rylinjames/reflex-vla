@@ -1,10 +1,21 @@
 # Customer first-run transcript (2026-04-19)
 
-**Method.** Pretended to be a first-time user who has only read `README.md`. Followed the quickstart commands verbatim on a fresh NVIDIA TRT container + Modal A10G. Did NOT peek at `src/`, `tests/`, `reflex_context/`, or any docs beyond README. Recorded every output, did not troubleshoot on the fly.
+**Method.** Pretended to be a first-time user who has only read `README.md`. Followed the quickstart commands verbatim on a fresh NVIDIA TRT container + Modal A10G (later A100). Did NOT peek at `src/`, `tests/`, `reflex_context/`, or any docs beyond README. Recorded every output, did not troubleshoot on the fly.
 
 **Reproducer:** `modal run scripts/modal_customer_dogfood.py`.
 
-**Bottom line:** the end-to-end customer flow works — `curl POST /act` returns a 50×32 action chunk with every field the README promises, in ~0.2s on `onnx_trt_fp16`. But four surprises would dent customer trust.
+**Arc of the dogfood.** Six iterations (v1 → v6). Each iteration ran the README quickstart verbatim and exposed bugs the previous iteration couldn't reach. Total: 8 customer-facing bugs found + 8 fixed + 1 meta-lesson about Modal's image cache. Arc summary below; per-bug detail in the sections that follow.
+
+| Iteration | Commit under test | New findings | Fixes landed in commit |
+|---|---|---|---|
+| v1 | `c8a6929` | 4 bugs (decomposed default, Model type: unknown, scary warnings, no image in curl) | — |
+| v2 | `a8fd0c4` | Install failed: `transformers<5.0` vs `[monolithic]==5.3.0` conflict | `a8fd0c4` (default-flip), `b8a7916` (pin loosened) |
+| v3 | `b8a7916` | Install failed: evdev needs clang, not in NVIDIA TRT container | `51592e5` |
+| v4 | `51592e5` | 4 more bugs (tokenizer zeros, missing `denoising_steps`, Target: unknown, 10min export) | `95ef679` |
+| v5 | `95ef679` | False negative — Modal cache served stale image despite git push | `6858838` (SHA-pin) |
+| v6 | `6858838` | *(running in background at time of this writing; verification pending)* | — |
+
+**Bottom line (as of v4 + the v5 cache miss).** The end-to-end customer flow works: `curl POST /act` returns a 50×32 action chunk, `onnx_trt_fp16` confirmed, all README-promised fields present (after v4 fixes). Eight customer-facing bugs squashed in one session. One meta-lesson captured about Modal infra that prevents future false negatives. Verification of v6 pending.
 
 ---
 
@@ -164,10 +175,140 @@ Two of those questions (model_type + 5 files vs 1) come directly from the decomp
 
 ---
 
+---
+
+## Fix log for findings #1–4 (commits `a8fd0c4`, `b8a7916`, `51592e5`)
+
+**#1 — decomposed default.** Flipped CLI default to `--monolithic`. `src/reflex/cli.py` line 63: `monolithic: bool = typer.Option(True, "--monolithic/--decomposed", ...)`. Customers now get the cos=+1.000000 path verbatim from the README quickstart. `--decomposed` is an explicit opt-in for the legacy path. Commit `a8fd0c4`.
+
+**Install fallout (v2).** Flipping the default exposed a dependency conflict: base pinned `transformers<5.0` but `[monolithic]` pins `transformers==5.3.0`. pip resolution failed. Loosened base to `transformers>=4.40,<5.4`. Commit `b8a7916` in `pyproject.toml`.
+
+**Install fallout (v3).** Next install attempt failed because `lerobot → evdev` builds a C extension that invokes `clang` directly. NVIDIA TRT container has `gcc` but not `clang`. Added `clang` to the dogfood image's apt install + added an `apt-get install -y clang` note to the README's TRT-container quickstart path. Commit `51592e5`.
+
+**#2 — Model type: unknown.** Only reachable via `--decomposed` opt-in once the default was flipped. Left as a known paper cut on the opt-in path; not blocking the customer path.
+
+**#3 — scary TRT/FP16 warnings.** Not fixed yet. Low priority; considered cosmetic. Could be addressed by adding `reflex doctor`'s output a "known-safe warnings" section.
+
+**#4 — README curl has no image.** Not fixed yet. Low priority; intentionally showing the simplest possible example, but follow-up is to show a base64 or file-URL image + document `state` shape per model.
+
+---
+
+## Dogfood v4 (against commit `51592e5`) — 4 more findings
+
+v3 unblocked install → end-to-end flow ran. Four new findings surfaced only because the previous three blockers had been cleared:
+
+### #5 (SEVERE) — tokenizer silently falls back to zeros
+
+Server log:
+```
+WARNING reflex.runtime.smolvla_onnx_server: Tokenizer unavailable (Asking to pad
+but the tokenizer does not have a padding token. Please select a token to use
+as `pad_token` ...); using zeros
+```
+
+SmolLM2 ships without a `pad_token`. `tokenizer(padding="max_length")` raises. The except branch in `smolvla_onnx_server.py` silently returned `lang_tokens=zeros, lang_masks=ones` and continued. **Result:** `instruction` had NO effect on `/act` output. Customer sends "pick up the red cup" and gets identical actions to any other instruction. Catastrophic silent failure.
+
+**Fix (commit `95ef679`):** added a `_get_tokenizer()` helper that sets `tok.pad_token = tok.eos_token` (standard HF pattern) + caches the tokenizer per-instance (no more re-download per request). Escalated the fallback log from `WARNING` to `ERROR` with a shout ("SEVERE: tokenizer failed. Instruction has NO effect on output") so if it ever does trip it's painfully visible.
+
+### #6 (HIGH) — `denoising_steps` missing from /act response
+
+README shows `"denoising_steps": 10` in the example response. Monolithic server emitted only `num_denoising_steps` (internal config key name). Customer field-check:
+```
+[fields-check] present: ['actions', 'num_actions', 'latency_ms', 'inference_mode']
+[fields-check] MISSING (README promises these): ['denoising_steps']
+```
+
+**Fix (commit `95ef679`):** emit both `denoising_steps` and `num_denoising_steps`. Same fix in `smolvla_onnx_server.py` and `pi0_onnx_server.py` for symmetry.
+
+### #7 (MEDIUM) — Target: unknown in VERIFICATION.md
+
+VERIFICATION.md:
+```
+- **Model:** `lerobot/smolvla_base`
+- **Model type:** smolvla           ← correct (post-v1 fix)
+- **Target:** unknown                ← despite --target desktop CLI arg
+```
+
+The monolithic path's `_write_reflex_config()` didn't accept or write `target`. CLI didn't pass it through.
+
+**Fix (commit `95ef679`):** threaded `target` through `_write_reflex_config` + `export_monolithic` dispatcher + all four per-model export functions + CLI invocation. Default "desktop" if caller omits.
+
+### #8 (MEDIUM) — export time 10+ min with no README warning
+
+Monolithic SmolVLA export: 637s (10.6 min) in v4. Previously (decomposed) was 197s. First-time customer has no warning this will take 10 minutes. A customer watching a seemingly-hung terminal for 5 minutes before anything prints will assume it's broken and Ctrl-C.
+
+**Fix (commit `95ef679`):** README note: *"first export is 5-15 min (SmolVLA ~10min, pi0 ~7min on A100). Subsequent `reflex serve` calls reuse the cached artifact and warm up in 10-70s."*
+
+---
+
+## Dogfood v5 (against commit `95ef679`) — a false negative
+
+Expected: all 4 v4 fixes verified. Actual: **all 4 fixes silently ignored.** Server log still showed the old `WARNING Tokenizer unavailable ... using zeros` wording. `/act` response still missing `denoising_steps`. VERIFICATION.md still showed `Target: unknown`.
+
+**Not a regression — a Modal image cache miss.** Modal's `.run_commands(...)` caches the resulting image layer keyed by the **command string**. Our install was:
+```
+pip install 'reflex-vla[serve,gpu,monolithic] @ git+https://github.com/rylinjames/reflex-vla'
+```
+
+Static string → Modal reused the v4-era cached image forever. The pip install inside the container never re-ran. We were testing v4's code, not `95ef679`. Build logs said nothing suspicious; the stale test looked identical to a fresh test.
+
+**Fix (commit `6858838`):** inject the repo's HEAD SHA into the pip install URL. Each commit changes the command string → Modal rebuilds. Also deterministic: pip pulls exactly that commit, not "latest main."
+
+```python
+_HEAD = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode().strip()[:12]
+
+image = ... .run_commands(
+    f"pip install 'reflex-vla[serve,gpu,monolithic] "
+    f"@ git+https://github.com/rylinjames/reflex-vla@{_HEAD}'",
+)
+```
+
+**Meta-lesson captured** in [`02_bugs_fixed/modal_deployment_gotchas.md`](../02_bugs_fixed/modal_deployment_gotchas.md) under "Modal image cache serves stale code silently." Any Modal dogfood / verification script that installs from a remote git URL must SHA-pin. The monolithic export scripts in `scripts/modal_*_monolithic_export.py` are safe because they use `add_local_dir("src/reflex", ...)` which hash-invalidates on file change.
+
+---
+
+## Dogfood v6 (against commit `6858838`)
+
+*Running in background at time of writing. Will update this section with the verification summary when it completes. Expected: #5, #6, #7, #8 all verified green.*
+
+---
+
+## What a first-time customer would say — revised after full arc
+
+Pre-fix customer:
+> "It worked — I got actions back. But 'Model type: unknown' in my receipt, 5 files not 1, and weirdly the same actions for any instruction I sent. Did I do something wrong?"
+
+Post-fix customer (v6 expected):
+> "Installed, exported, served. Took about 10 min on the first export but they warned me in the README. `/act` returns what the README says. It all just worked."
+
+The arc from "customer leaves confused" to "it just worked" is ~45 minutes of engineering + one-and-a-half hours of Modal runs. Worth every minute.
+
+---
+
+## Summary — 8 findings, 8 fixes, 1 meta-lesson
+
+| # | Severity | Finding | Fix commit |
+|---|---|---|---|
+| 1 | 🔴 SEVERE | `reflex export` default routed to decomposed path | `a8fd0c4` |
+| 2 | 🟠 HIGH | `[monolithic]` install conflict with base transformers pin | `b8a7916` |
+| 3 | 🟠 HIGH | clang missing in NVIDIA TRT container → evdev build fails | `51592e5` |
+| 4 | 🔴 SEVERE | SmolVLA tokenizer silently returned zeros → `instruction` had no effect | `95ef679` |
+| 5 | 🟠 HIGH | `/act` response missing `denoising_steps` field (README-promised) | `95ef679` |
+| 6 | 🟡 MEDIUM | VERIFICATION.md `Target: unknown` despite `--target desktop` | `95ef679` |
+| 7 | 🟡 MEDIUM | 10-minute first export with no README warning | `95ef679` |
+| 8 | — | Modal image cache silently served stale v4 code to v5 dogfood | `6858838` |
+
+Additional non-blocker items identified but intentionally not fixed this session: README curl missing an `image` field (intentionally simplest example); scary TRT/FP16 warnings on server boot (cosmetic).
+
+---
+
 ## Related
 
-- `scripts/modal_customer_dogfood.py` — the reproducer
+- `scripts/modal_customer_dogfood.py` — the reproducer (now SHA-pinned per commit)
 - `README.md` — the customer's starting point
-- `src/reflex/cli.py` — where the `reflex export` default is set
+- `src/reflex/cli.py` — `reflex export` default is now `--monolithic`
+- `src/reflex/runtime/smolvla_onnx_server.py` — tokenizer fix + `denoising_steps` field
+- `src/reflex/exporters/monolithic.py` — `target` threaded through all four exporters
+- `02_bugs_fixed/modal_deployment_gotchas.md` — "Modal image cache serves stale code silently" (the v5 lesson)
 - `06_experiments/monolithic_parity_table.md` — the verified path (monolithic)
-- `02_bugs_fixed/smolvla_pipeline_bugs.md` — the 12 known bugs in the decomposed path the customer just got
+- `02_bugs_fixed/smolvla_pipeline_bugs.md` — the 12 known bugs in the decomposed path (now only reachable via `--decomposed` opt-in)

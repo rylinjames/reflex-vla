@@ -519,3 +519,46 @@ This preemptively registers empty modules under those names so subsequent `from 
 
 **Lesson.** If you're tracing a complex package where one submodule has transitive import breaks you don't care about, stub it in `sys.modules` before importing the rest. Don't try to fix the broken submodule unless you actually need it.
 
+---
+
+## Gotcha (2026-04-19): Modal image cache serves stale code silently
+
+**Symptom.** Customer dogfood v5 ran against a container that still showed v4's bug output — the tokenizer fallback warning was the old wording, the `/act` response still lacked the field I'd added. Four code fixes were pushed, the `pip install @ git+https://github.com/rylinjames/reflex-vla` pulls from `main`, yet the container behavior didn't change.
+
+**Root cause.** Modal's `.run_commands(...)` caches the resulting image layer keyed by the **command string**, not by what the command actually fetches. A command like `pip install 'reflex-vla[serve,gpu] @ git+https://github.com/rylinjames/reflex-vla'` is a static string — Modal sees it and reuses the cached layer from a prior run, even if `main` has advanced. The pip install inside the container never runs a second time. You're testing the version of your code that was HEAD when you FIRST built the image. Forever.
+
+**The subtle part.** Build logs say nothing — you just see "✓ Created mount ..." and the Modal function boots. No "using cached image" notice. The stale test looks identical to a fresh test.
+
+**Fix (the pattern for any Modal dogfood/verification script).** Inject the repo HEAD SHA into the command string so each commit produces a new cache key:
+
+```python
+import subprocess, os, modal
+
+def _repo_head_sha() -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        ).decode().strip()[:12]
+    except Exception:
+        return "main"  # fallback if not in a git repo
+
+_HEAD = _repo_head_sha()
+
+image = (
+    modal.Image.from_registry(...)
+    .run_commands(
+        f"pip install 'reflex-vla[serve,gpu,monolithic] "
+        f"@ git+https://github.com/rylinjames/reflex-vla@{_HEAD}'",
+    )
+)
+```
+
+The `@{_HEAD}` on the pip URL ALSO pins pip to install that exact commit (not latest `main`), so the test is deterministic against the code that triggered it.
+
+**Safe-to-cache vs must-SHA-pin Modal scripts.** Many of our Modal scripts already work fine without this because their `run_commands` reference local code (`.add_local_dir("src/reflex", ...)`) — Modal hash-invalidates those when the local files change. The cache-key footgun only hits scripts that install via a remote git URL with a static ref (`main`, `master`, a branch name, or no ref at all). Audit test: any Modal script that installs from `git+https://...` without `@<sha>` is a candidate. The currently-known offenders are any dogfood-style script; the monolithic export scripts use `add_local_dir` and are safe.
+
+**Lesson.** Modal's image cache is content-addressed by command STRING, not by what the command does. Remote git installs sidestep that assumption. Always SHA-pin for any verification script that's meant to test newly-committed code.
+
+**Discovered:** customer dogfood v5 2026-04-19. Cost: one wasted ~12 min Modal run + a false-positive "fixes don't work" signal that almost triggered a second round of unnecessary debugging.
+
