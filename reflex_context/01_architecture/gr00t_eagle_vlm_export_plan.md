@@ -158,22 +158,53 @@ Committed. `expert_stack_with_vlm.onnx` writes to `/onnx_out/monolithic_with_vlm
 
 The with-vlm ONNX is equivalent to our existing zero-stub `model.onnx` (cos=1.0 parity already measured), just with state + vlm_kv as first-class external inputs instead of hardcoded zeros. Runtime-swappable.
 
-**Step 4b — eagle_vlm.onnx (PENDING)**
+**Step 4b — eagle_vlm.onnx (DONE 2026-04-19)**
 
-Harder: export the Eagle VLM backbone (SigLIP vision + Qwen2 text + mlp1 connector) as a separate ONNX that produces `[B, T, 2048]` KV features fed into `expert_stack_with_vlm.onnx`'s `vlm_kv` input.
+`scripts/modal_gr00t_eagle_vlm_export.py` — three entrypoints (smoke/export/parity). Modal run `ap-jtSMVpCoXVjkBBRp29bFWT` (parity).
 
-Requires:
-- Build `EagleExportStack(nn.Module)` using the vendored Eagle source (`src/reflex/exporters/eagle_vendor/`)
-- Apply the 3-patch stack to Qwen2 (F.pad causal mask + frozen DynamicLayer.update + past_kv.get_seq_length) — same as pi0/pi0.5
-- SigLIP vision tower has no causal mask → no patches needed
-- Export via `torch.onnx.export(opset=19)` with inputs `(pixel_values, input_ids, attention_mask, image_flags)`
-- Expected size: ~2-3 GB FP32
-- Parity test: Eagle ONNX output vs `EagleBackbone.forward_eagle` on shared seeded inputs
+| Metric | Value |
+|---|---|
+| Export time | 222s on A100-40GB |
+| Total params | 1.868 B |
+| Graph rewrites applied | 431 (dynamo + optimize) |
+| ONNX size | 5.6 MB model + 5.99 GB external data |
+| PyTorch forward | 1.21s |
+| ONNX CUDA forward | 0.81s |
+| Output shape | `[1, 80, 2048]` |
+| cos sim | **+1.000000** (0.99999999994) |
+| max abs diff | 4.25e-04 |
+| mean abs diff | 1.81e-05 |
+| Verdict | **PASS (machine precision)** |
 
-Target: cos=+1.000000 (matching pi0/pi0.5 precedent).
+**Turned out easier than expected**: the feared 3-patch Qwen2 stack (F.pad mask, frozen DynamicLayer.update, past_kv.get_seq_length) was NOT needed because our export is single-shot (`use_cache=False`). Dynamo tracing handled Qwen3-style attention cleanly.
 
-### Step 5 — end-to-end test (~2 hours)
-Real image + "pick up the red cup" through the chain → actions. Flip the image; actions change (currently with zero-KV they don't). Then update `measured_numbers.md` + launch drafts with "GR00T now has real VLM conditioning, cos=+1.000000 verified."
+**Surprise findings during Step 4b implementation**:
+
+1. **N1.6 language model is Qwen3, not Qwen2** — has `qk_layernorm` (q_norm + k_norm inside self-attn) and no bias on q/k/v projections. Discovered when Qwen2 config produced 48 missing keys (q/k/v.bias) and 32 unexpected keys (k_norm, q_norm). Switched architecture to `Qwen3ForCausalLM` → 0 missing, 0 unexpected.
+2. **SigLIP is 224×224, not 448×448** in N1.6. Derived from position_embedding shape: 256 positions = 16×16 patch grid × 14-pixel patches = 224×224 input. pixel_shuffle scale=0.5 → 64 image tokens per tile.
+3. **patch_embedding is stored flat [1152, 588]** in N1.6 state dict (588 = 3×14×14 = patch flattened). Standard SigLIP uses Conv2d weights [1152, 3, 14, 14]. Reshape-on-load handles this.
+4. **pixel_shuffle needed `.reshape()` not `.view()`** in the vendored Eagle source — non-contiguous tensor failed view in export path.
+5. **Image-token splicing broke ORT** with the Eagle original `input_embeds[selected] = vit_flat` (boolean-index assignment). It lowered to `index_put → Where` that couldn't broadcast (vit_len=64 vs seq=80). Fix: replace with `torch.cat([vit_embeds, text_embeds[vision_seq:]], dim=1)`. Export contract: caller must pack image tokens at the FRONT of input_ids.
+
+**Eagle class name is `Eagle25VL`** (no underscores, despite the model being called "Eagle 2.5 VL" — NOT `Eagle2_5_VL`).
+
+### Step 5 — end-to-end chain test (PENDING — ~2 hours)
+Real image + "pick up the red cup" through the full chain → actions:
+`pixel_values + prompt → eagle_vlm.onnx → hidden_states[B, T, 2048] → expert_stack_with_vlm.onnx (vlm_kv) → velocity → actions[B, chunk, 32]`.
+
+Flip the image; actions must change (currently with zero-KV they don't). Then update `measured_numbers.md` + launch drafts with "GR00T now has real VLM conditioning, cos=+1.000000 verified on both ONNX hops."
+
+Modal script to write: `scripts/modal_gr00t_e2e_chain_test.py`:
+1. Load N1.6 once on A100
+2. Build `EagleExportStack` + `GR00TFullStack` (PyTorch reference)
+3. Load both ONNXes via ORT
+4. Generate image A (random seed 1) and image B (random seed 2) + identical prompt tokens
+5. Run PyTorch chain (Eagle then DiT) → actions_A_pt, actions_B_pt
+6. Run ONNX chain (eagle_vlm.onnx then expert_stack_with_vlm.onnx) → actions_A_onnx, actions_B_onnx
+7. Assertions:
+   - `cos(actions_A_pt, actions_A_onnx) > 0.9999`  (parity holds end-to-end)
+   - `max_abs(actions_A_pt - actions_B_pt) > 0.01` (images drive different actions in PyTorch)
+   - `max_abs(actions_A_onnx - actions_B_onnx) > 0.01` (same sensitivity survives ONNX)
 
 ---
 
