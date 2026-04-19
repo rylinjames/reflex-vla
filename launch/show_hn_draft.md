@@ -10,13 +10,13 @@ Hi HN —
 
 I built Reflex because the path from "we have a trained Vision-Language-Action model" to "it runs on a real robot" is painful. Every VLA team writes their own export pipeline. Most break silently under FP16 / TRT / Jetson constraints.
 
-**What's verified today:** I export two of the most-used open VLAs — SmolVLA (HuggingFace LeRobot) and pi0 (Physical Intelligence, via lerobot) — as monolithic ONNX covering the full 10-step flow-matching denoise. Measured on shared seeded inputs against PyTorch eager:
+**What's verified today:** I export three of the most-used open VLAs — SmolVLA (HuggingFace LeRobot), pi0, and pi0.5 (Physical Intelligence, via lerobot) — as monolithic ONNX covering the full 10-step flow-matching denoise. Measured on shared seeded inputs against PyTorch eager:
 
-- **SmolVLA num_steps=10 ONNX**: max_abs = 5.96e-07 (first-action) / 3.70e-06 (full chunk) vs `sample_actions(num_steps=10)`. **Machine precision.**
-- **pi0 num_steps=10 ONNX**: max_abs = 1.31e-01, cos = 0.977 vs `sample_actions(num_steps=10)`. An **approximation** — the `create_causal_mask → None` shim we use to unblock `torch.export` accidentally skips prefix-pad masking on pi0's PaliGemma path. SmolVLA's SmolLM2 backbone isn't affected by this shim, which is why it stays at machine precision.
-- Both models also available at num_steps=1, cos = +1.0000000 at machine precision (for users who want the exact one-shot Euler).
+- **SmolVLA num_steps=10 ONNX**: cos = +1.0000000, max_abs = 5.96e-07 (first-action) vs `sample_actions(num_steps=10)`. **Machine precision.**
+- **pi0 num_steps=10 ONNX**: cos = +1.0000000, max_abs = 2.09e-07 (first-action) vs `sample_actions(num_steps=10)`. **Machine precision.**
+- **pi0.5 num_steps=10 ONNX**: cos = +1.0000000, max_abs = 2.38e-07 (first-action) vs `sample_actions(num_steps=10)`. **Machine precision.**
 
-Fixing pi0's cos=0.977 → 1.0 at num_steps=10 requires patching Gemma's inner attention forward to use pi0's explicit 4D mask directly — ~5 hours of transformers surgery, tracked for v0.3.
+Getting pi0 / pi0.5 to cos=1.0 at num_steps=10 required three interacting patches (under `torch.export` + `transformers==5.3.0` + DynamicCache): (1) F.pad + logical AND for the block-causal mask instead of `torch.cat` (cat loses the suffix dim under FakeTensor); (2) freeze `DynamicLayer.update` during the unrolled Euler loop so the cache doesn't grow across iterations; (3) use `past_kv.get_seq_length()` instead of the pad-mask shape for mask assembly.
 
 ```bash
 pip install 'reflex-vla[serve,gpu] @ git+https://github.com/rylinjames/reflex-vla'
@@ -38,9 +38,9 @@ reflex serve ./smol --port 8000
 3. Even with a clean aten graph, `torch.onnx.export` sometimes lowers `index_put` to a `Where(bool, int64, float)` ONNX node. Fix: post-export pass that walks Where nodes and inserts Cast nodes targeting the declared output dtype.
 
 **What's explicitly NOT done:**
-- pi0.5 (AdaRMSNorm) and GR00T (DiT + AdaLN) ONNX parity — v0.3
+- GR00T (DiT + AdaLN) ONNX parity — v0.3
 - Jetson latency numbers — CloudJetson has only AGX Orin 64GB available; Orin Nano waitlisted. Launch numbers are from Modal A10G; real Jetson data comes when someone runs `reflex bench` on a dev kit
-- **Orin Nano 8GB fit for pi0.** The pi0 monolithic ONNX is 12.5GB (FP32) and does not fit on Orin Nano 8GB in any precision once activations + OS are counted. SmolVLA (1.6GB) fits fine. pi0 realistically needs Orin 16GB+ or a desktop NVIDIA GPU. FP16 engine rebuild + Orin Nano fit is a v0.3 item
+- **Orin Nano 8GB fit for pi0 / pi0.5.** The pi0 / pi0.5 monolithic ONNX is 12.5–13GB (FP32) and does not fit on Orin Nano 8GB in any precision once activations + OS are counted. SmolVLA (1.6GB) fits fine. pi-family models realistically need Orin 16GB+ or a desktop NVIDIA GPU. FP16 engine rebuild + Orin Nano fit is a v0.3 item
 - Earlier TRT FP16 latency tables were on a now-abandoned decomposed-ONNX path; latency re-measurement on the monolithic path is in v0.3
 
 Repo: https://github.com/rylinjames/reflex-vla

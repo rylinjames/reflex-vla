@@ -23,12 +23,11 @@ reflex serve ./smol
 | Artifact | vs PyTorch | max_abs | cos |
 |---|---|---|---|
 | SmolVLA monolithic ONNX, num_steps=10 (production default) | `sample_actions(num_steps=10)` | **5.96e-07** | **+1.0000000** |
-| pi0 monolithic ONNX, num_steps=1 | `sample_actions(num_steps=1)` | **1.43e-06** | **+1.0000000** |
+| pi0 monolithic ONNX, num_steps=10 (production default) | `sample_actions(num_steps=10)` | **2.09e-07** | **+1.0000000** |
+| pi0.5 monolithic ONNX, num_steps=10 (production default) | `sample_actions(num_steps=10)` | **2.38e-07** | **+1.0000000** |
 | pi0 native wrapper vs raw sample_actions | raw `sample_actions` | **0.000 (bit-exact)** | 1.0 |
-| pi0 monolithic ONNX, num_steps=10 | `sample_actions(num_steps=10)` | 1.31e-01 | **+0.977** |
 
-All reproducible: `modal run scripts/modal_pi0_monolithic_export.py --parity --num-steps 10`
-(and the SmolVLA variant). Full ledger: `reflex_context/measured_numbers.md`.
+All reproducible: `modal run scripts/modal_{smolvla,pi0,pi05}_monolithic_export.py --parity --num-steps 10`. Full ledger: `reflex_context/measured_numbers.md`.
 
 ## 9 regression gates
 
@@ -46,19 +45,17 @@ Every release is held against these; `tests/test_*.py` has receipt-based markers
 
 ## Honest disclaimers
 
-- **pi0 at num_steps=10 is an approximation** (cos=0.977, ~2% of action range). The fix requires resolving a FakeTensor × DynamicCache × Gemma-attention interaction under `torch.export`. Deep investigation happened in this session; tracked for v0.3. If you want exact pi0 at num_steps=10, use num_steps=1 (cos=1.0) with the understanding that one Euler step ≠ ten.
-- **pi0's 12.5GB monolithic ONNX does not fit on Orin Nano 8GB.** SmolVLA (1.6GB) does. pi0 needs Orin 16GB+ or desktop GPU for v0.2. FP16 engine rebuild for Orin Nano fit is v0.3.
+- **pi0/pi0.5 12.5–13GB monolithic ONNX does not fit on Orin Nano 8GB.** SmolVLA (1.6GB) does. Large pi-family models need Orin 16GB+ or desktop GPU for v0.2. FP16 engine rebuild for Orin Nano fit is v0.3.
 - **Jetson latency numbers — none.** CloudJetson's Orin Nano is waitlisted; no customer hardware yet. Numbers ship when a community benchmark lands.
-- **pi0.5 + GR00T not supported in v0.2.** Require AdaRMSNorm / DiT+AdaLN decomposition. v0.3 items.
+- **GR00T not supported in v0.2.** Requires DiT+AdaLN decomposition. v0.3 item.
 - **Earlier TRT FP16 latency tables were from a now-abandoned decomposed-ONNX path.** Desktop GPU + Jetson latency re-measurement tracked for v0.3.
 
 ## v0.3 roadmap (ordered by customer signal + cost)
 
-1. **pi0 cos=1.0 at num_steps=10** — finish the deep fix
-2. **Jetson latency** — publish real ms/step numbers once hardware is available
-3. **pi0.5** (AdaRMSNorm) + **GR00T** (DiT + AdaLN) monolithic exports
-4. **pi0 FP16 engine rebuild** for Orin Nano 8GB fit
-5. **Docker arm64 image** for Jetson deployment
+1. **Jetson latency** — publish real ms/step numbers once hardware is available
+2. **GR00T** (DiT + AdaLN) monolithic export
+3. **FP16 engine rebuild** for Orin Nano 8GB fit (pi0/pi0.5)
+4. **Docker arm64 image** for Jetson deployment
 
 ## Try it + feedback
 
@@ -83,7 +80,7 @@ Apache 2.0. Single maintainer. Looking especially for:
 
 ## Pre-launch checklist (from `launch/README.md`)
 
-- [x] SmolVLA + pi0 ONNX parity verified
+- [x] SmolVLA + pi0 + pi0.5 ONNX parity verified at num_steps=10 (cos=+1.000000, machine precision)
 - [x] pi0 native wrapper parity bit-exact
 - [x] README reframed around verified cos numbers (not unverified TRT)
 - [x] Docker workflow landed + v0.2.0 image published + smoke-tested

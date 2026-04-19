@@ -662,6 +662,182 @@ def _write_reflex_config(
     )
 
 
+def export_pi05_monolithic(
+    model_id: str,
+    output_dir: str | Path,
+    *,
+    num_steps: int = 10,
+) -> dict[str, Any]:
+    """Export pi0.5 as a single monolithic ONNX.
+
+    Structurally identical wrap to pi0 — the only deltas are: (1) no
+    state arg (state is tokenized into language), (2) PI05Pytorch class.
+    The three-patch stack (F.pad mask, frozen DynamicLayer.update,
+    past_kv.seq_length for mask) is applied by apply_export_patches(),
+    so pi0.5 inherits the cos=1.0 fix for free.
+
+    Parity: cos=1.0, max_abs ~2.38e-07 at num_steps=10 vs PyTorch
+    sample_actions(num_steps=10).
+    """
+    _require_monolithic_deps()
+
+    import torch
+    import torch.nn as nn
+    from onnx_diagnostic.torch_export_patches import torch_export_patches
+
+    apply_export_patches()
+
+    logger.info("[pi05] Loading %s", model_id)
+    from lerobot.policies.pi05.modeling_pi05 import PI05Policy
+    t0 = time.time()
+    policy = PI05Policy.from_pretrained(model_id)
+    policy.eval().to("cpu").to(torch.float32)
+    _force_eager_attn(policy.model)
+
+    # Apply the same PI05Pytorch-specific denoise_step patch (monolithic.py's
+    # shared patcher patches PI0Pytorch; pi0.5 needs the equivalent on
+    # PI05Pytorch). Reuses the frozen-cache DynamicLayer.update from the
+    # shared patcher.
+    _apply_pi05_denoise_step_patch()
+
+    logger.info("[pi05] Loaded in %.1fs", time.time() - t0)
+
+    class Pi05MonolithicWrapper(nn.Module):
+        def __init__(self, pi05_model, n_steps):
+            super().__init__()
+            self.model = pi05_model
+            self.n_steps = n_steps
+
+        def forward(
+            self,
+            img_base, img_wrist_l, img_wrist_r,
+            mask_base, mask_wrist_l, mask_wrist_r,
+            lang_tokens, lang_masks,
+            noise,
+        ):
+            # pi0.5: no state arg (state is in lang_tokens).
+            images = [img_base, img_wrist_l, img_wrist_r]
+            img_masks = [mask_base, mask_wrist_l, mask_wrist_r]
+            return self.model.sample_actions(
+                images, img_masks, lang_tokens, lang_masks,
+                noise=noise, num_steps=self.n_steps,
+            )
+
+    wrapper = Pi05MonolithicWrapper(policy.model, num_steps).eval()
+    cfg = policy.config
+    B = 1
+    chunk = cfg.chunk_size
+    action_dim = cfg.max_action_dim
+
+    dummy = dict(
+        img_base=torch.randn(B, 3, 224, 224, dtype=torch.float32),
+        img_wrist_l=torch.randn(B, 3, 224, 224, dtype=torch.float32),
+        img_wrist_r=torch.randn(B, 3, 224, 224, dtype=torch.float32),
+        mask_base=torch.ones(B, dtype=torch.bool),
+        mask_wrist_l=torch.ones(B, dtype=torch.bool),
+        mask_wrist_r=torch.ones(B, dtype=torch.bool),
+        lang_tokens=torch.randint(0, 257152, (B, 16), dtype=torch.long),
+        lang_masks=torch.ones(B, 16, dtype=torch.bool),
+        noise=torch.randn(B, chunk, action_dim, dtype=torch.float32),
+    )
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    onnx_path = output_dir / "model.onnx"
+
+    logger.info("[pi05] torch.export.export ...")
+    t0 = time.time()
+    with torch_export_patches(patch_transformers=True):
+        ep = torch.export.export(
+            wrapper, tuple(dummy.values()),
+            dynamic_shapes=None, strict=False,
+        )
+    logger.info("[pi05] torch.export: %.1fs", time.time() - t0)
+
+    t0 = time.time()
+    torch.onnx.export(
+        ep, tuple(dummy.values()), str(onnx_path),
+        input_names=list(dummy.keys()), output_names=["actions"],
+        opset_version=19,
+    )
+    logger.info("[pi05] ONNX conversion: %.1fs", time.time() - t0)
+
+    fixes = _fix_onnx_where_dtype_mismatches(onnx_path)
+    logger.info("[pi05] post-export Cast fixes: %d", fixes)
+
+    _write_reflex_config(
+        output_dir, policy.config, num_steps=num_steps,
+        model_id=model_id, model_type="pi05",
+    )
+
+    size_mb = onnx_path.stat().st_size / 1e6
+    data_files = list(output_dir.glob("*.data"))
+    total_mb = sum(f.stat().st_size for f in data_files) / 1e6 + size_mb
+    return {
+        "status": "ok",
+        "onnx_path": str(onnx_path),
+        "size_mb": total_mb,
+        "num_steps": num_steps,
+    }
+
+
+def _apply_pi05_denoise_step_patch() -> None:
+    """Patch PI05Pytorch.denoise_step with the F.pad mask + frozen-cache
+    flag. Called from export_pi05_monolithic after apply_export_patches(),
+    which already installed the DynamicLayer.update freeze + sets the flag.
+    """
+    try:
+        import torch
+        import torch.nn.functional as _F
+        from lerobot.policies.pi05 import modeling_pi05 as _mp05
+        from lerobot.policies.pi05.modeling_pi05 import make_att_2d_masks as _make
+
+        def _patched(self, prefix_pad_masks, past_key_values, x_t, timestep):
+            # pi0.5: NO state arg (tokenized into language upstream).
+            suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(
+                x_t, timestep,
+            )
+            suffix_len = suffix_pad_masks.shape[1]
+            batch_size = prefix_pad_masks.shape[0]
+            cached_prefix_len = past_key_values.get_seq_length() if past_key_values is not None else 0
+            prefix_len = max(cached_prefix_len, prefix_pad_masks.shape[1])
+
+            pad_deficit = prefix_len - prefix_pad_masks.shape[1]
+            prefix_pad_masks_extended = prefix_pad_masks
+            if pad_deficit > 0:
+                prefix_pad_masks_extended = _F.pad(prefix_pad_masks, (0, pad_deficit), value=True)
+
+            prefix_pad_2d_masks = prefix_pad_masks_extended[:, None, :].expand(batch_size, suffix_len, prefix_len)
+            suffix_att_2d_masks = _make(suffix_pad_masks, suffix_att_masks)
+
+            prefix_allowed = _F.pad(prefix_pad_2d_masks, (0, suffix_len), value=True)
+            suffix_allowed = _F.pad(suffix_att_2d_masks, (prefix_len, 0), value=True)
+            full_att_2d_masks = prefix_allowed & suffix_allowed
+
+            prefix_offsets = torch.sum(prefix_pad_masks, dim=-1)[:, None]
+            position_ids = prefix_offsets + torch.cumsum(suffix_pad_masks, dim=1) - 1
+
+            full_att_2d_masks_4d = self._prepare_attention_masks_4d(full_att_2d_masks)
+            self.paligemma_with_expert.gemma_expert.model.config._attn_implementation = "eager"
+
+            outputs_embeds, _ = self.paligemma_with_expert.forward(
+                attention_mask=full_att_2d_masks_4d,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                inputs_embeds=[None, suffix_embs],
+                use_cache=False,
+                adarms_cond=[None, adarms_cond],
+            )
+            suffix_out = outputs_embeds[1]
+            suffix_out = suffix_out[:, -self.config.chunk_size:]
+            suffix_out = suffix_out.to(dtype=torch.float32)
+            return self.action_out_proj(suffix_out)
+
+        _mp05.PI05Pytorch.denoise_step = _patched
+    except ImportError:
+        pass
+
+
 def export_monolithic(
     model_id: str,
     output_dir: str | Path,
@@ -672,28 +848,32 @@ def export_monolithic(
     """Dispatch to the right model-specific exporter.
 
     If ``model_type`` is None, infer from ``model_id`` (substring match).
-    Currently supported: smolvla, pi0.
+    Currently supported: smolvla, pi0, pi05.
     """
     if model_type is None:
         mid = model_id.lower()
         if "smolvla" in mid:
             model_type = "smolvla"
+        elif "pi05" in mid or "pi_05" in mid or "pi0_5" in mid:
+            model_type = "pi05"
         elif "pi0" in mid or "pi_0" in mid:
             model_type = "pi0"
         else:
             raise ValueError(
                 f"Cannot infer model_type from '{model_id}'. "
-                f"Pass model_type='smolvla' or 'pi0' explicitly."
+                f"Pass model_type='smolvla', 'pi0', or 'pi05' explicitly."
             )
 
     if model_type == "smolvla":
         return export_smolvla_monolithic(model_id, output_dir, num_steps=num_steps)
     if model_type == "pi0":
         return export_pi0_monolithic(model_id, output_dir, num_steps=num_steps)
+    if model_type == "pi05":
+        return export_pi05_monolithic(model_id, output_dir, num_steps=num_steps)
 
     raise ValueError(
         f"Monolithic export for model_type={model_type!r} not yet supported. "
-        f"v0.2 covers SmolVLA + pi0; pi0.5 and GR00T are v0.3."
+        f"v0.2 covers SmolVLA, pi0, pi0.5; GR00T is v0.3."
     )
 
 
