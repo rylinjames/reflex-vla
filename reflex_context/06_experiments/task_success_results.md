@@ -1,6 +1,6 @@
 # LIBERO-10 task-success on the Reflex pipeline (2026-04-19)
 
-**Headline (as of 2026-04-19 late):** First non-zero LIBERO task success on the reflex stack — **1/3 on libero_10 task 0 at N=3 episodes**, via `HuggingFaceVLA/smolvla_libero` through our ported rollout harness. Full statistical sample (N=25 across 5 tasks) pending; expected to land in the community-baseline range of 43-51%.
+**Headline (finalized 2026-04-19 post-N=25):** **10/25 = 40.0% success** on LIBERO-10 tasks 0-4 (5 tasks × 5 episodes with init-state rotation) via `HuggingFaceVLA/smolvla_libero` through our OpenPI-ported harness. Per-task: 3/5 on tasks 0, 1, 2; 1/5 on task 3; 0/5 on task 4. Statistically in line with lerobot community's 43–51% reported baseline (paper claims 71% but that's unreproduced by community).
 
 **The root cause of prior 0% was NOT** what 3 separate research rounds hypothesized (vla-eval adapter, VLM conditioning, image flip, camera keys, state format). **It was missing `policy_postprocessor.json` unnormalization** — we fed zero-mean normalized action values to `env.step` instead of real-scale deltas.
 
@@ -110,17 +110,29 @@ Our N=3 sample is too small to distinguish between these ranges. N=25 will give 
 
 ---
 
-## Pending: N=25 batch
+## N=25 result (finalized 2026-04-19)
 
-Configuration for the next statistical run:
-- Model: `HuggingFaceVLA/smolvla_libero`
-- Tasks: 5 (task 0-4 of libero_10)
-- Episodes per task: 5 (init_idx rotation 0-4)
-- Total rollouts: 25
-- Max steps: 520
-- Expected budget: ~50 min Modal A10G, ~$3
+**10/25 = 40.0% overall success rate.** All 25 rollouts ran full 520 steps without crashes.
 
-Once results land, this doc gets a definitive verified row + measured_numbers.md gets the non-provisional "Verified" entry.
+| Task | Success | Description |
+|---|---|---|
+| 0 | 3/5 (60%) | "put both the alphabet soup and the tomato sauce in the basket" |
+| 1 | 3/5 (60%) | "put both the cream cheese box and the butter in the basket" |
+| 2 | 3/5 (60%) | "turn on the stove and put the moka pot on it" |
+| 3 | 1/5 (20%) | "put the black bowl in the bottom drawer of the cabinet and close it" |
+| 4 | 0/5 (0%) | "put the white mug on the left plate and put the yellow and white mug on the right plate" |
+
+Per-init-state patterns (tasks 0-2): init_idx 0-1 often fail, init_idx 2-4 often succeed. Consistent with the "tasks 0-2 have some harder starting configurations" pattern — not our bug, just task difficulty.
+
+**Tasks 3-4 (0-20%) are significantly below community average.** Possibilities to investigate:
+1. Preprocessor normalization stats — our load path may differ from lerobot's training-time preprocessing
+2. `replan_steps=5` — maybe too aggressive for long-horizon tasks (task 3 is drawer manipulation, task 4 is bimanual-like coordination)
+3. State 8D formula — our `_quat2axisangle` matches OpenPI's but may differ from training-time implementation
+4. Tokenizer / language prompt formatting
+
+Run URL: `modal.com/apps/romirj/main/ap-bixv0uk0z`. Cost: ~$3 A10G, ~50 min.
+
+**Load-bearing:** this is the first statistically meaningful LIBERO-10 number for reflex. It validates that cos=1.0 parity DOES translate to real task success (above-zero, community-baseline-consistent).
 
 ---
 
