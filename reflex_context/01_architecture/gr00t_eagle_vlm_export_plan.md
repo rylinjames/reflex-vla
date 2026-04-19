@@ -137,11 +137,40 @@ Final parity: **cos=+1.000000, max_abs=0.0** on seeded synthetic inputs (noisy, 
 
 **Caveat:** this parity is against a hand-rolled reference using our own primitive classes, NOT against the real lerobot/GR00T-N1.5 reference (blocked on lerobot version incompat). We trust the primitives because they were already verified cos=1.0 against PyTorch in prior session (see `monolithic_parity_table.md` GR00T rows). The real "does this produce task-relevant actions" test is Step 5 (end-to-end).
 
-### Step 4 — Modal export (~3 hours)
-Extend `scripts/modal_gr00t_monolithic_export.py` with `export_gr00t_vlm_modal()`:
-1. Build Eagle-equivalent encoder (using vendored Eagle source), export → `eagle_vlm.onnx`
-2. Build `GR00TFullStack` with `state + vlm_kv` plumbed, export → `expert_stack_with_vlm.onnx`
-3. Parity test chains the two ONNXes end-to-end
+### Step 4 — Modal export
+
+**Step 4a — expert_stack_with_vlm.onnx (DONE 2026-04-19)**
+
+Committed. `expert_stack_with_vlm.onnx` writes to `/onnx_out/monolithic_with_vlm/` on Modal volume.
+
+- Export command: `modal run scripts/modal_gr00t_monolithic_export.py --vlm`
+- ONNX conversion time: 314.7s (~5 min)
+- Size: 2.0MB model + 4414.3MB external data = **4.4GB total**
+- All 5 inputs wired: `noisy_actions, timestep, position_ids, state, vlm_kv`
+- Dynamic axes: batch on all inputs, vlm_seq on vlm_kv
+
+**Parity test (DONE):**
+- `modal run scripts/modal_gr00t_monolithic_export.py --vlm-parity`
+- Modal run `ap-n7oJT5C20y4tEdVu4D55n1`
+- cos = +1.000000, max_abs = 1.78e-05 (fp32 noise)
+- First action matches PyTorch and ONNX to 5 decimal places
+- **VERDICT: PASS (machine precision)**
+
+The with-vlm ONNX is equivalent to our existing zero-stub `model.onnx` (cos=1.0 parity already measured), just with state + vlm_kv as first-class external inputs instead of hardcoded zeros. Runtime-swappable.
+
+**Step 4b — eagle_vlm.onnx (PENDING)**
+
+Harder: export the Eagle VLM backbone (SigLIP vision + Qwen2 text + mlp1 connector) as a separate ONNX that produces `[B, T, 2048]` KV features fed into `expert_stack_with_vlm.onnx`'s `vlm_kv` input.
+
+Requires:
+- Build `EagleExportStack(nn.Module)` using the vendored Eagle source (`src/reflex/exporters/eagle_vendor/`)
+- Apply the 3-patch stack to Qwen2 (F.pad causal mask + frozen DynamicLayer.update + past_kv.get_seq_length) — same as pi0/pi0.5
+- SigLIP vision tower has no causal mask → no patches needed
+- Export via `torch.onnx.export(opset=19)` with inputs `(pixel_values, input_ids, attention_mask, image_flags)`
+- Expected size: ~2-3 GB FP32
+- Parity test: Eagle ONNX output vs `EagleBackbone.forward_eagle` on shared seeded inputs
+
+Target: cos=+1.000000 (matching pi0/pi0.5 precedent).
 
 ### Step 5 — end-to-end test (~2 hours)
 Real image + "pick up the red cup" through the chain → actions. Flip the image; actions change (currently with zero-KV they don't). Then update `measured_numbers.md` + launch drafts with "GR00T now has real VLM conditioning, cos=+1.000000 verified."
