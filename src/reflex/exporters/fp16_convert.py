@@ -23,16 +23,15 @@ logger = logging.getLogger(__name__)
 
 
 # Ops that commonly underflow at FP16 in flow-matching / transformer VLAs.
-# Keeping these in FP32 is the standard mitigation — the cost is ~1-2% of
-# total weights still at FP32, which is worth it for the correctness win.
-FP16_OP_BLOCKLIST: tuple[str, ...] = (
-    "Pow",           # x^2 / sqrt(x) in LayerNorm variance calc
-    "ReduceMean",    # LayerNorm mean
-    "Sqrt",          # LayerNorm denominator
-    # Add empirically as we discover them:
-    # "Softmax",     # if attention scores destabilize
-    # "LayerNormalization",  # full op keep-in-FP32
-)
+# Keeping these in FP32 was the standard mitigation (conservative precision
+# preservation), BUT: the onnxconverter_common.float16 pass doesn't insert
+# Cast nodes for blocklisted-op outputs, so downstream MatMul/Mul receives
+# one FP32 arg + one FP16 arg → ORT rejects with "Type parameter (T) of
+# Optype (X) bound to different types". On 2.25GB / 12.5GB monolithic
+# graphs this is hard to fix by selectively casting, so we let Pow/
+# ReduceMean/Sqrt convert to FP16 and accept the LayerNorm precision cost.
+# The `parity_gate(cos>0.999, max_abs<5e-3)` check catches divergence.
+FP16_OP_BLOCKLIST: tuple[str, ...] = ()
 
 
 def estimate_fp16_size_bytes(fp32_total_bytes: int) -> int:

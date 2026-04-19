@@ -83,15 +83,20 @@ class TestParityGate:
 
 
 class TestBlocklist:
-    def test_blocklist_covers_layernorm_ops(self):
-        """LayerNorm-adjacent ops must be in the default blocklist —
-        they're the biggest FP16 underflow risk for transformer VLAs."""
-        for op in ("Pow", "ReduceMean", "Sqrt"):
-            assert op in FP16_OP_BLOCKLIST, f"{op} missing from default blocklist"
-
     def test_blocklist_is_immutable_tuple(self):
         """Protect against accidental in-place mutation at import time."""
         assert isinstance(FP16_OP_BLOCKLIST, tuple)
+
+    def test_blocklist_is_empty_by_default(self):
+        """Empty default blocklist — full graph gets converted to FP16.
+
+        onnxconverter_common.float16 doesn't insert Cast nodes for
+        blocklisted-op outputs, so a non-empty blocklist creates
+        FP32/FP16 operand mismatches on Mul/MatMul that ORT rejects.
+        Empty list = all ops converted, parity gate (cos>0.999)
+        catches any precision regression.
+        """
+        assert FP16_OP_BLOCKLIST == ()
 
 
 class TestImportGuard:
