@@ -829,6 +829,20 @@ def serve(
              "production use, pass via env var (e.g. --api-key $REFLEX_API_KEY) "
              "rather than hardcoding.",
     ),
+    replan_hz: float = typer.Option(
+        0.0,
+        help="If >0, enable async replan-while-execute action buffering "
+             "(the Physical Intelligence sliding_window pattern). Set with "
+             "--execute-hz. Example: --execute-hz 100 --replan-hz 20 means "
+             "the robot pops an action 100 times/sec while fresh chunks are "
+             "generated 20 times/sec. Buffer capacity is auto-sized from "
+             "the ratio. 0 = disabled (return full chunks, current default).",
+    ),
+    execute_hz: float = typer.Option(
+        0.0,
+        help="Execute frequency in Hz — the rate at which the robot pops "
+             "an action from the buffer. Only used when --replan-hz > 0.",
+    ),
     verbose: bool = typer.Option(False, help="Verbose logging"),
 ):
     """Start a VLA inference server. POST /act with image + instruction → actions.
@@ -923,6 +937,12 @@ def serve(
         console.print("[red]Install serve dependencies: pip install 'reflex-vla[serve]'[/red]")
         raise typer.Exit(1)
 
+    if replan_hz > 0 and execute_hz <= 0:
+        console.print(
+            "[red]--replan-hz requires --execute-hz > 0 (the robot's pop rate).[/red]"
+        )
+        raise typer.Exit(1)
+
     app_instance = create_app(
         export_dir,
         device=device,
@@ -935,9 +955,15 @@ def serve(
         max_batch=max_batch,
         batch_timeout_ms=batch_timeout_ms,
         api_key=api_key or None,
+        replan_hz=replan_hz if replan_hz > 0 else None,
+        execute_hz=execute_hz if execute_hz > 0 else None,
     )
     if api_key:
         composed.append("[cyan]api-key-auth[/cyan]")
+    if replan_hz > 0:
+        composed.append(
+            f"[cyan]replan[/cyan]={replan_hz:g}Hz/execute={execute_hz:g}Hz"
+        )
     console.print("[bold green]Starting server...[/bold green]")
     uvicorn.run(app_instance, host=host, port=port, log_level="info" if verbose else "warning")
 

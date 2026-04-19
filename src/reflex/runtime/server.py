@@ -121,11 +121,57 @@ class ReflexServer:
         self._model_hash: str | None = None
         self._config_hash: str | None = None
 
+        # Async replan-while-execute action_buffer (goal:
+        # action-chunk-buffering). Lazy-initialized on first
+        # configure_replan() call; None means the sliding_window
+        # buffering path is disabled and /act returns full chunks
+        # (default behavior).
+        from reflex.runtime.buffer import ActionChunkBuffer
+        self._action_buffer: ActionChunkBuffer | None = None
+        self._replan_hz: float | None = None
+        self._execute_hz: float | None = None
+        self._replan_threshold: float = 0.5
+
     def _load_config(self) -> dict[str, Any]:
         config_path = self.export_dir / "reflex_config.json"
         if config_path.exists():
             return json.loads(config_path.read_text())
         return {}
+
+    def configure_replan(
+        self,
+        replan_hz: float,
+        execute_hz: float,
+    ) -> None:
+        """Enable async replan-while-execute buffering with a ring buffer.
+
+        When configured, callers that pop from the buffer receive single
+        actions instead of full chunks. The /act handler refills the
+        buffer by running predict() when should_replan() crosses the
+        threshold. See reflex/runtime/buffer.py for the sliding_window
+        semantics.
+
+        Typical robot setup: execute_hz=100, replan_hz=20 (matches the
+        Physical Intelligence pattern). action_buffer capacity is auto-
+        sized from the ratio.
+        """
+        from reflex.runtime.buffer import ActionChunkBuffer, compute_replan_window
+
+        window = compute_replan_window(
+            execute_hz=execute_hz,
+            replan_hz=replan_hz,
+            chunk_size=self.chunk_size,
+        )
+        self._action_buffer = ActionChunkBuffer(capacity=window["capacity"])
+        self._replan_hz = replan_hz
+        self._execute_hz = execute_hz
+        self._replan_threshold = window["threshold_ratio"]
+        logger.info(
+            "replan configured: replan_hz=%g execute_hz=%g "
+            "buffer capacity=%d threshold_ratio=%.2f",
+            replan_hz, execute_hz, window["capacity"],
+            window["threshold_ratio"],
+        )
 
     def _latency_percentiles(self) -> dict[str, float]:
         """Return p50/p95/p99 + jitter_ms over the rolling latency window.
@@ -948,6 +994,8 @@ def create_app(
     max_batch: int = 1,
     batch_timeout_ms: float = 5.0,
     api_key: str | None = None,
+    replan_hz: float | None = None,
+    execute_hz: float | None = None,
 ) -> Any:
     """Create a FastAPI app for serving VLA predictions.
 
@@ -1039,6 +1087,16 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app):
         server.load()
+        # Only configure replan buffering after load() so chunk_size is known.
+        if replan_hz is not None and execute_hz is not None and hasattr(
+            server, "configure_replan"
+        ):
+            try:
+                server.configure_replan(
+                    replan_hz=replan_hz, execute_hz=execute_hz
+                )
+            except Exception as e:
+                logger.warning("replan config failed, continuing without: %s", e)
         # Warm up: run one inference so any lazy-build (TRT engine build,
         # ORT graph optimization passes) happens before users hit /act.
         # Without this, the first /act request takes 30-90s with TRT EP enabled
