@@ -151,30 +151,25 @@ def run_lerobot_native_libero(
         pass
     print(f"[lerobot-native] Policy loaded in {time.time()-t0:.1f}s")
 
-    # Load lerobot's env
+    # Load lerobot's env + processor
     print(f"[lerobot-native] Importing lerobot env + processors...")
     from lerobot.envs.libero import LiberoEnv
-    from lerobot.envs.configs import LiberoEnv as LiberoEnvConfig
     from lerobot.processor.env_processor import LiberoProcessorStep
-
-    # Build the LIBERO env config (libero_10 suite)
-    env_cfg = LiberoEnvConfig(task="libero_10")  # type: ignore
-    env = LiberoEnv(env_cfg)
-    print(f"[lerobot-native] LiberoEnv built")
 
     # Build the processor step (handles image flip + state concat)
     processor = LiberoProcessorStep()
 
-    num_tasks = len(env.tasks) if hasattr(env, "tasks") else 10
-    tasks_to_run = task_indices if task_indices is not None else list(range(num_tasks))
+    tasks_to_run = task_indices if task_indices is not None else list(range(10))
     print(f"[lerobot-native] Running tasks: {tasks_to_run}")
 
     for task_idx in tasks_to_run:
         task_start = time.time()
         task_result = {"task_idx": task_idx, "episodes": [], "success": 0, "total": 0}
+        # LiberoEnv is per-task: (task_id, task_suite_name, ...). Rebuild per task.
+        env = LiberoEnv(task_id=task_idx, task_suite_name="libero_10")
+        print(f"[lerobot-native] LiberoEnv built for task {task_idx}")
         for ep in range(num_episodes):
             try:
-                env.set_task(task_idx)
                 obs, _ = env.reset()
                 policy.reset()
                 steps = 0
@@ -220,8 +215,10 @@ def run_lerobot_native_libero(
                 results["total_eps"] += 1
         results["per_task"].append(task_result)
         print(f"task {task_idx} done: {task_result['success']}/{task_result['total']}")
-
-    env.close()
+        try:
+            env.close()
+        except Exception:
+            pass
 
     success_rate = (
         100.0 * results["total_success"] / results["total_eps"]
