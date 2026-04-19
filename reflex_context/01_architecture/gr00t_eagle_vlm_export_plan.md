@@ -188,7 +188,24 @@ The with-vlm ONNX is equivalent to our existing zero-stub `model.onnx` (cos=1.0 
 
 **Eagle class name is `Eagle25VL`** (no underscores, despite the model being called "Eagle 2.5 VL" — NOT `Eagle2_5_VL`).
 
-### Step 5 — end-to-end chain test (PENDING — ~2 hours)
+### ✅ Step 5 — end-to-end chain test (DONE 2026-04-19)
+
+`scripts/modal_gr00t_e2e_chain_test.py` — Modal run `ap-Me7Dh9NjO1jtCOyLJeLWb4`.
+
+| Gate | Metric | Value | Pass? |
+|---|---|---|---|
+| Parity A | cos(PyTorch_chain, ONNX_chain) | **+1.000000** (0.99999999996) | ✅ (>0.9999) |
+| Parity A | max_abs on raw actions | 1.90e-05 | ✅ |
+| Parity B | cos(PyTorch_chain, ONNX_chain) | **+1.000000** (0.99999999996) | ✅ (>0.9999) |
+| Parity B | max_abs on raw actions | 1.46e-05 | ✅ |
+| Sensitivity PyTorch | max_abs(actions_A - actions_B) | 0.212 | ✅ (>0.01) |
+| Sensitivity PyTorch | cos(actions_A, actions_B) | +0.982 | (image-driven delta — NOT identical) |
+| Sensitivity ONNX | max_abs(actions_A - actions_B) | 0.212 | ✅ (>0.01) |
+| Sensitivity ONNX | cos(actions_A, actions_B) | +0.982 | (matches PyTorch) |
+
+**Closes the last GR00T deployment gap.** Both exported ONNXes compose correctly, VLM conditioning is LIVE (image change → action change), and the ONNX chain faithfully mirrors the PyTorch chain. Before: `vlm_kv=0` stub → actions ignored the image. After: real Eagle KV → actions track the image.
+
+### Step 5 (ORIGINAL plan, preserved for reference) — end-to-end chain test
 Real image + "pick up the red cup" through the full chain → actions:
 `pixel_values + prompt → eagle_vlm.onnx → hidden_states[B, T, 2048] → expert_stack_with_vlm.onnx (vlm_kv) → velocity → actions[B, chunk, 32]`.
 
