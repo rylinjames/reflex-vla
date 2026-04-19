@@ -2,19 +2,20 @@
 
 Operational plan for shipping Reflex VLA v0.2 — the first sellable version. Derived from GOALS.yaml; stays in sync with it by referencing goal IDs, not duplicating descriptions.
 
-**MVP thesis:** "SmolVLA + pi0 on your Jetson, verified cos≥0.999 parity, with ROS2 + safety + one-command install." The cross-framework moat claim (both SmolVLA *and* pi0 verified) is load-bearing — without it, reflex is a one-model tool.
+**MVP thesis (EXPANDED 2026-04-19):** "Every major open VLA verified at cos=+1.000000 machine precision — SmolVLA, pi0, pi0.5, GR00T N1.6 — with ROS2 + Docker + safety + one-command install." The cross-framework moat claim is now load-bearing across the full open-VLA landscape (not just SmolVLA + pi0).
 
-**Target: 4–7 weeks of solo dev to sellable v0.2 MVP.**
+**Status: v0.2 ship-ready. All 9 launch-verification gates green. Awaiting launch trigger (user decision).**
 
 ---
 
 ## Current focus
 
 **Up next (pick one):**
-- `jetson-benchmark-ci` (weight 9) — get the second real number (Jetson ms/step) via Amazon-return Orin Nano + community bounty
-- `pi0-onnx-parity` (weight 9) — unlock the cross-framework claim (1–2 weeks of verification + bug hunting on existing 584-line pi0_exporter.py)
+- **Tag + launch v0.2.1 / v0.3.0** — all the technical work is done. Launch sequencing: LeRobot #3146 comment → Show HN (48–72h later) → r/robotics.
+- **GR00T VLM conditioning (Eagle backbone export)** — DiT + AdaLN stack is machine precision, but VLM conditioning is zero-stubbed. Full multi-modal control is v0.3.
+- **Jetson latency** — blocks on hardware access (CloudJetson Orin Nano waitlisted). Community-bounty-friendly.
 
-**Last completed:** `native-path-parity` (2026-04-17, commit `4c0f817`) — cos=+1.000, L2=0.000 end-to-end on SmolVLA.
+**Last completed:** `gr00t-onnx-parity` (2026-04-19, commit `4090e76`) — single-step cos=+1.000000 max_abs=8.34e-07; 4-step loop cos=+1.000000 max_abs=4.77e-07. All four major open VLAs now at machine precision.
 
 ---
 
@@ -37,24 +38,36 @@ Priority order reflects dependency + moat impact, not raw weight.
 | 11 | `docker-image-distribution` | 7 | ✅ done | 0 | 2026-04-18: `Dockerfile` + `.dockerignore` + `.github/workflows/docker-publish.yml` landed. Auto-publishes `ghcr.io/rylinjames/reflex-vla:<version>` + `:latest` on any `v*` tag push. Image: python:3.12-slim + reflex-vla[serve,gpu], ENTRYPOINT=`reflex`, CMD=`serve /exports --host 0.0.0.0 --port 8000`. x86_64 only; Jetson arm64 deferred to v0.3. README quickstart section added. |
 | 12 | `export-verification-report` | 6 | ✅ done | 0 | 2026-04-18: `src/reflex/verification_report.py` writes `VERIFICATION.md` with sha256 manifest + opset + model metadata. Skeleton fires from `reflex export`; full parity rows written by `reflex validate`. Regression test at `tests/test_verification_report.py` (6 tests). |
 
-**MVP SHIP READY.** All 11 software items landed on 2026-04-18. `jetson-benchmark-ci` deferred to v0.3 (hardware not available on CloudJetson; wait for customer-supplied hardware or community bounty).
+**MVP SHIP READY.** All 11 software items + pi0 num_steps=10 fix + pi0.5 + GR00T landed by 2026-04-19. Nine launch-verification gates all green. Last commit: `c46386a` (knowledge capture). Awaiting user "go" on tag + launch.
+
+### 2026-04-19 session additions (beyond the original 12 MVP goals)
+
+| goal_id | status | commit | verified number |
+|---|---|---|---|
+| `pi0-num-steps-10-fix` (the 3-patch stack) | ✅ done | `bac658a` | cos=+1.000000, max_abs=2.09e-07 |
+| `pi05-onnx-parity` (promoted from v0.3) | ✅ done | `c604962` | cos=+1.000000, max_abs=2.38e-07 |
+| `gr00t-onnx-parity` (promoted from v0.3) | ✅ done | `4090e76` | cos=+1.000000, max_abs=8.34e-07 (single-step); 4.77e-07 (4-step loop) |
+| 9 launch-verification gates | ✅ all green | various | see `06_experiments/launch_verification_gates.md` |
+
+The v0.3 "deferred" list below has shrunk — pi0.5 and GR00T parity moved up to MVP. Remaining v0.3 items are genuine follow-ups, not reprioritizations.
 
 ---
 
 ## Deferred to v0.3
 
-Everything below is tracked in GOALS.yaml but explicitly NOT in the MVP ship. Revisit after MVP launch + first paying customer signal.
+Everything below is tracked in GOALS.yaml but explicitly NOT in v0.2 ship. Revisit after launch + first paying customer signal.
 
 | goal_id | weight | why deferred |
 |---|---|---|
-| `distill-dmpo` | 9 | Wow-factor (1000+ Hz one-step) but not a deal-blocker. Ship after MVP, reposition around it for a v0.3 launch. |
+| `distill-dmpo` | 9 | Wow-factor (1000+ Hz one-step) but not a deal-blocker. Ship after launch, reposition around it for a v0.3 release. |
+| `jetson-benchmark-ci` | 9 | CloudJetson Orin Nano waitlisted; no hardware access. Community bounty or customer-supplied hardware will unblock. |
+| `gr00t-vlm-conditioning` | 8 | NEW 2026-04-19: GR00T's DiT stack is cos=1.0 machine precision, but VLM conditioning is zero-stubbed. Full multi-modal control needs Eagle-2-HG VLM backbone ONNX export + chained KV input to the DiT. |
 | `calibration-metrics` | 8 | Deepest Leg C differentiator but zero paying customers asking. Build after first customer acquires the MVP and asks. |
-| `prefix-kv-cache-reuse` | 8 | Dexmal pattern, 5–10× throughput. Hold for v0.3; MVP sells on baseline latency. |
-| `pi05-onnx-parity` | 7 | AdaRMSNorm handling. 1–2 weeks after pi0 lands. Ships in v0.3. |
-| `gr00t-onnx-parity` | 7 | DiT + AdaLN handling. Hardest of the four. v0.3. |
-| `xvla-exporter` | 7 | xVLA support expands model zoo. Ship after pi0/pi0.5/GR00T are solid. |
+| `prefix-kv-cache-reuse` | 8 | Dexmal pattern, 5–10× throughput. Hold for v0.3; v0.2 sells on baseline latency. |
+| `xvla-exporter` | 7 | xVLA support expands model zoo. Now that pi0 + pi0.5 + GR00T are all solid, this is next in line. |
 | `api-key-auth` | 7 | Tablestakes prod, but first customers won't need it (single-tenant deployments). v0.3. |
 | `action-chunk-buffering` | 7 | Physical Intelligence pattern. Ship when first customer hits the 20Hz/100Hz timing problem. |
+| `orin-nano-fp16-fit` | 7 | NEW: pi0/pi0.5 monolithic ONNX is 12.5–13GB FP32; doesn't fit on Orin Nano 8GB. FP16 engine rebuild + validation is v0.3. SmolVLA (1.6GB) and GR00T (4.4GB) already fit. |
 | `latency-histograms` | 6 | Observability polish. v0.3. |
 | `stripe-license-gating` | 6 | Invoice the first 5 customers manually. Automate in v0.3. |
 | `adaptive-denoise-fix` | 5 | pi0-only feature, edge case. v0.3. |
@@ -63,6 +76,7 @@ Everything below is tracked in GOALS.yaml but explicitly NOT in the MVP ship. Re
 | `openvla-exporter` | 4 | Different (tokenized) path. v0.3. |
 | `openvla-onnx-parity` | 4 | Depends on openvla-exporter. v0.3. |
 | `sqlite-audit-log` | 3 | EU AI Act compliance for EU customers. Ship when first EU customer appears. |
+| `docker-arm64-jetson-image` | 3 | x86_64 image shipped in v0.2; arm64 Jetson image needs native build. v0.3. |
 
 ---
 
@@ -88,13 +102,13 @@ Everything below is tracked in GOALS.yaml but explicitly NOT in the MVP ship. Re
 3. **Same day or next day: r/robotics** — third audience
 4. Direct outreach to 3 named companies (identify during weeks 5–6)
 
-**Launch prerequisites** (from `launch/README.md`):
-- [ ] All MVP goals landed
-- [ ] Jetson benchmark number measured and published
-- [ ] pi0 + SmolVLA both at verified cos≥0.999
-- [ ] Docker images published to GHCR
-- [ ] 5-minute quickstart tested on fresh Mac + fresh Linux box
-- [ ] GitHub Issues open + <24h response commitment
+**Launch prerequisites** (from `launch/README.md` + 2026-04-19 updates):
+- [x] All MVP goals landed (2026-04-18, +3 promoted ones on 2026-04-19)
+- [ ] Jetson benchmark number — **explicitly deferred to v0.3** (disclosed in every draft)
+- [x] SmolVLA + pi0 + pi0.5 + GR00T all at verified cos=+1.000000 (exceeded bar)
+- [x] Docker image published to GHCR (`ghcr.io/rylinjames/reflex-vla:0.2.0`)
+- [ ] 5-minute quickstart tested on fresh Mac + fresh Linux box (optional polish — CI + Modal fresh-install gate already cover this)
+- [ ] GitHub Issues open + <24h response commitment set in profile
 
 **Signal to invest in v0.3:**
 - 2 of 3 founding-customer outreach says yes → PMF, build v0.3
@@ -116,4 +130,4 @@ This doc tracks three categories of change:
 
 ---
 
-**Last updated:** 2026-04-17 (MVP ship list expanded 11 → 12 with smolvla-onnx-parity)
+**Last updated:** 2026-04-19 (pi0.5 + GR00T + 9 launch gates landed; v0.2 ship-ready; awaiting tag + launch trigger)
