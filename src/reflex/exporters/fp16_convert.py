@@ -355,7 +355,12 @@ def fix_fp16_dtype_mismatches(
         raise ImportError("requires `onnx`: pip install onnx") from e
 
     onnx_path = Path(onnx_path)
-    model = onnx.load(str(onnx_path), load_external_data=True)
+    # Load WITHOUT rehydrating external weight data. Graph surgery only
+    # touches nodes + value_info; initializers stay as external-data
+    # placeholders. This keeps the subsequent save tiny (just the proto,
+    # not the 6-12 GB .bin file) — and avoids onnx.save's float_data
+    # re-serialization path that silently writes FP16 weights as FP32.
+    model = onnx.load(str(onnx_path), load_external_data=False)
 
     dtype_map = _build_dtype_map(model)
     new_nodes: list[Any] = []
@@ -426,16 +431,10 @@ def fix_fp16_dtype_mismatches(
         "[fp16-fix] inserted %d Cast node(s); re-saving %s...",
         cast_counter, onnx_path,
     )
-    # Preserve external-data layout (weight .bin file already on disk).
-    # We clear lingering ext data files we may collide with before saving.
-    onnx.save(
-        model,
-        str(onnx_path),
-        save_as_external_data=True,
-        all_tensors_to_one_file=True,
-        location=f"{onnx_path.stem}.bin",
-        size_threshold=1024,
-    )
+    # Save WITHOUT toggling external data — initializers were loaded as
+    # external-data placeholders and stay that way. This writes only the
+    # graph proto (tiny), leaving the existing .bin file on disk untouched.
+    onnx.save(model, str(onnx_path))
     return cast_counter
 
 
