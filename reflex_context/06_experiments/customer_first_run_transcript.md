@@ -13,9 +13,9 @@
 | v3 | `b8a7916` | Install failed: evdev needs clang, not in NVIDIA TRT container | `51592e5` |
 | v4 | `51592e5` | 4 more bugs (tokenizer zeros, missing `denoising_steps`, Target: unknown, 10min export) | `95ef679` |
 | v5 | `95ef679` | False negative — Modal cache served stale image despite git push | `6858838` (SHA-pin) |
-| v6 | `6858838` | *(running in background at time of this writing; verification pending)* | — |
+| v6 | `6858838` | *(verification pass)* — all 4 v4-era fixes verified green | — |
 
-**Bottom line (as of v4 + the v5 cache miss).** The end-to-end customer flow works: `curl POST /act` returns a 50×32 action chunk, `onnx_trt_fp16` confirmed, all README-promised fields present (after v4 fixes). Eight customer-facing bugs squashed in one session. One meta-lesson captured about Modal infra that prevents future false negatives. Verification of v6 pending.
+**Bottom line.** The end-to-end customer flow works: `curl POST /act` returns a 50×32 action chunk in 0.3s, every README-promised field present, VERIFICATION.md receipt accurate, no silent failures. Eight customer-facing bugs squashed in one session plus one meta-lesson captured about Modal image caching. The customer running the README quickstart verbatim now gets the cos=+1.000000 verified path with the verification receipt to match.
 
 ---
 
@@ -267,9 +267,38 @@ image = ... .run_commands(
 
 ---
 
-## Dogfood v6 (against commit `6858838`)
+## Dogfood v6 (against commit `6858838`) — all fixes verified green
 
-*Running in background at time of writing. Will update this section with the verification summary when it completes. Expected: #5, #6, #7, #8 all verified green.*
+SHA-pinned pip install forced the image to rebuild. Same customer journey. All four v4-era fixes verified:
+
+**Fix #5 (tokenizer):** ✅ server log is clean — no `Tokenizer unavailable ... using zeros` WARNING. Tokenizer loads successfully because `pad_token` is set. `instruction` now affects `/act` output.
+
+**Fix #6 (denoising_steps):** ✅ field-check now reads `present: ['actions', 'num_actions', 'latency_ms', 'denoising_steps', 'inference_mode']`. Zero missing fields.
+
+**Fix #7 (Target):** ✅ VERIFICATION.md now shows `- **Target:** desktop` (was "unknown" in v4).
+
+**Fix #8 (README timing note):** ✅ documentation-only fix; v6 export took 789s (13 min) vs v4's 637s — the variance is normal but now the README warns upfront.
+
+Verbatim v6 transcript:
+```
+$ reflex --version        → 0.1.0           (4.0s)
+$ reflex --help           → ok              (3.2s)
+$ reflex doctor           → ok              (9.8s)
+$ reflex models           → ok              (3.0s)
+$ reflex targets          → ok              (3.0s)
+$ reflex export ...       → exit 0          (789.8s ≈ 13 min)
+$ ls /tmp/smol            → 3 files, 1.5GB  [monolithic layout ✓]
+$ head VERIFICATION.md    → Model type: smolvla, Target: desktop  [✓]
+$ reflex serve (bg)       → ready after 17s
+$ curl POST /act          → 200 OK, 50×32 actions  (0.3s)
+                            fields: [actions, num_actions, latency_ms,
+                                     denoising_steps, inference_mode]
+                            inference_mode: smolvla_onnx_monolithic
+```
+
+**First-time customer experience (final):** install → export → serve → `/act` all work, every README-promised field present, inference_mode reveals the cos=1.0 monolithic path, VERIFICATION.md receipt is accurate. The only residual friction is the 13-minute first export, which is now disclosed upfront.
+
+Reproducer: `modal run scripts/modal_customer_dogfood.py`.
 
 ---
 
