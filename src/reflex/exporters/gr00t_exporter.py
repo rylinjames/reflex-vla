@@ -66,6 +66,13 @@ GR00T_META_KEYS = {
     "action_dec_1_b": "action_head.action_decoder.layer1.b",
     "action_dec_2_W": "action_head.action_decoder.layer2.W",
     "action_dec_2_b": "action_head.action_decoder.layer2.b",
+    # Per-embodiment STATE encoder (discovered 2026-04-19; N1.6 has this
+    # at action_head.state_encoder.*). Shape: layer1=[32, 128, 1024],
+    # layer2=[32, 1024, 1536]. Raw state dim 128 → hidden 1024 → DiT hidden 1536.
+    "state_enc_1_W": "action_head.state_encoder.layer1.W",
+    "state_enc_1_b": "action_head.state_encoder.layer1.b",
+    "state_enc_2_W": "action_head.state_encoder.layer2.W",
+    "state_enc_2_b": "action_head.state_encoder.layer2.b",
 }
 
 
@@ -545,6 +552,44 @@ class GR00TActionEncoder(nn.Module):
         return out
 
 
+class GR00TStateEncoder(nn.Module):
+    """2-linear state encoder, pinned to one embodiment.
+
+    Per-embodiment state_dict weights have shape (discovered 2026-04-19 in
+    ``action_head.state_encoder.*`` of nvidia/GR00T-N1.6-3B):
+        layer1.W [32, 128, 1024]   -- raw state (128) → hidden (1024)
+        layer1.b [32, 1024]
+        layer2.W [32, 1024, 1536]  -- hidden → DiT hidden (1536)
+        layer2.b [32, 1536]
+
+    Input convention is [embodiment, in, out]; F.linear needs transpose.
+
+    Purpose: embed the robot's proprio state into a single DiT token so the
+    action head is conditioned on the current pose. Prior reflex exports
+    omitted this entirely — actions were generated from noise + timestep
+    with no state awareness. This class closes that gap.
+    """
+
+    def __init__(self, raw_state_dim: int, hidden_mid: int, hidden_out: int,
+                 weights: dict, embodiment_id: int = 0):
+        super().__init__()
+        self.raw_state_dim = raw_state_dim
+        self.hidden_mid = hidden_mid
+        self.hidden_out = hidden_out
+
+        # Slice per embodiment and pre-transpose for F.linear.
+        self.register_buffer("L1_w", weights["L1_W"][embodiment_id].T.contiguous())
+        self.register_buffer("L1_b", weights["L1_b"][embodiment_id].clone())
+        self.register_buffer("L2_w", weights["L2_W"][embodiment_id].T.contiguous())
+        self.register_buffer("L2_b", weights["L2_b"][embodiment_id].clone())
+
+    def forward(self, state: torch.Tensor) -> torch.Tensor:
+        # state: [b, raw_state_dim] → state_token [b, 1, hidden_out]
+        h = F.silu(F.linear(state, self.L1_w, self.L1_b))  # [b, hidden_mid]
+        out = F.linear(h, self.L2_w, self.L2_b)            # [b, hidden_out]
+        return out.unsqueeze(1)  # [b, 1, hidden_out] — one state token
+
+
 class GR00TActionDecoder(nn.Module):
     """2-linear action decoder, pinned to one embodiment.
 
@@ -571,11 +616,16 @@ class GR00TActionDecoder(nn.Module):
 
 
 class GR00TFullStack(nn.Module):
-    """End-to-end serve-compatible GR00T: raw actions → raw velocity.
+    """End-to-end serve-compatible GR00T: raw actions + state + VLM → raw velocity.
 
-    Wraps the DiT expert stack with action_encoder (pre) and action_decoder
-    (post). Input and output shapes both [b, chunk, raw_action_dim], which
-    lets `reflex serve` run its standard flow-matching denoise loop.
+    2026-04-19 extension: accepts `state` and `vlm_kv` inputs. The DiT consumes
+    `sa_embs = cat(state_token, action_tokens)` and does cross-attn to
+    `vlm_kv`. Prior version passed action_tokens alone with a zero VLM-KV
+    placeholder, producing actions from noise + timestep only.
+
+    For backward compat with the zero-stub path, `state_encoder` is optional;
+    when absent the forward skips the state token and passes action_tokens
+    alone (original behavior).
     """
 
     def __init__(
@@ -583,22 +633,47 @@ class GR00TFullStack(nn.Module):
         dit_stack: GR00TExpertStack,
         action_encoder: GR00TActionEncoder,
         action_decoder: GR00TActionDecoder,
+        state_encoder: GR00TStateEncoder | None = None,
     ):
         super().__init__()
         self.dit = dit_stack
         self.action_encoder = action_encoder
         self.action_decoder = action_decoder
+        self.state_encoder = state_encoder
 
-    def forward(self, noisy_actions: torch.Tensor, timestep: torch.Tensor,
-                position_ids: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        noisy_actions: torch.Tensor,
+        timestep: torch.Tensor,
+        position_ids: torch.Tensor,
+        state: torch.Tensor | None = None,
+        vlm_kv: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         # Compute time embedding ONCE (encoder uses it, DiT recomputes internally)
         t_sin = _sinusoidal_timestep(timestep, self.dit.sinusoidal_dim)
         time_emb = self.dit.timestep_linear_2(F.silu(self.dit.timestep_linear_1(t_sin)))
 
-        # Encode → DiT → Decode
-        tokens = self.action_encoder(noisy_actions, time_emb)          # [b, chunk, 1536]
-        velocity_tokens = self.dit(tokens, timestep, position_ids)      # [b, chunk, 1024]
-        velocity_raw = self.action_decoder(velocity_tokens)             # [b, chunk, 128]
+        # Encode action chunk → [b, chunk, 1536]
+        action_tokens = self.action_encoder(noisy_actions, time_emb)
+
+        # Optional state token prefix. N1.6's DiT input is
+        # sa_embs = cat(state_token, action_tokens) — no future_tokens.
+        if self.state_encoder is not None and state is not None:
+            state_token = self.state_encoder(state)            # [b, 1, 1536]
+            tokens = torch.cat([state_token, action_tokens], dim=1)  # [b, chunk+1, 1536]
+            action_start = 1
+        else:
+            tokens = action_tokens
+            action_start = 0
+
+        # DiT with cross-attn on vlm_kv (None → zero-stub for back-compat)
+        velocity_tokens = self.dit(tokens, timestep, position_ids, vlm_kv=vlm_kv)
+
+        # Slice off state prefix (if present) before decode
+        if action_start > 0:
+            velocity_tokens = velocity_tokens[:, action_start:, :]
+
+        velocity_raw = self.action_decoder(velocity_tokens)    # [b, chunk, raw_action_dim]
         return velocity_raw
 
 
@@ -644,12 +719,41 @@ def build_gr00t_full_stack(
         embodiment_id=embodiment_id,
     )
 
-    full = GR00TFullStack(dit, action_encoder, action_decoder)
+    # State encoder (new 2026-04-19; absent from prior reflex exports).
+    # Soft-load: if state_dict lacks state_encoder keys (older checkpoints),
+    # skip and fall back to the action-only sequence for back-compat.
+    state_encoder = None
+    if GR00T_META_KEYS["state_enc_1_W"] in state_dict:
+        state_enc_weights = {
+            "L1_W": state_dict[GR00T_META_KEYS["state_enc_1_W"]].float(),
+            "L1_b": state_dict[GR00T_META_KEYS["state_enc_1_b"]].float(),
+            "L2_W": state_dict[GR00T_META_KEYS["state_enc_2_W"]].float(),
+            "L2_b": state_dict[GR00T_META_KEYS["state_enc_2_b"]].float(),
+        }
+        raw_state_dim = state_enc_weights["L1_W"].shape[1]    # (32, 128, 1024) → 128
+        state_hidden_mid = state_enc_weights["L1_W"].shape[2]  # → 1024
+        state_hidden_out = state_enc_weights["L2_W"].shape[2]  # (32, 1024, 1536) → 1536
+        state_encoder = GR00TStateEncoder(
+            raw_state_dim=raw_state_dim,
+            hidden_mid=state_hidden_mid,
+            hidden_out=state_hidden_out,
+            weights=state_enc_weights,
+            embodiment_id=embodiment_id,
+        )
+    else:
+        raw_state_dim = None
+        state_hidden_out = None
+
+    full = GR00TFullStack(dit, action_encoder, action_decoder,
+                           state_encoder=state_encoder)
     full = full.float()
     full.eval()
 
     meta = dict(dit_meta)
     meta["raw_action_dim"] = raw_action_dim
+    meta["raw_state_dim"] = raw_state_dim
+    meta["state_hidden_out"] = state_hidden_out
+    meta["has_state_encoder"] = state_encoder is not None
     meta["embodiment_id"] = embodiment_id
     meta["full_stack_params_m"] = sum(p.numel() for p in full.parameters()) / 1e6
     meta["full_stack_buffers_m"] = sum(p.numel() for p in full.buffers()) / 1e6

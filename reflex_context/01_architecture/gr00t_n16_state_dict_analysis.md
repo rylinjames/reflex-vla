@@ -178,17 +178,33 @@ For runtime: Eagle VLM ONNX (~7.5 GB FP32) runs once per observation, fed into D
 
 ---
 
-## Verified (all by this key dump — two iterations v1 + v2)
+## Verified (all by this key dump — three iterations v1 + v2 + v3)
 
 - ✅ `eagle_linear` absent — N1.6 feeds raw Qwen2 2048-dim into DiT
 - ✅ State dict prefix is `backbone.model.*` (not `backbone.eagle_model.*`)
 - ✅ `action_head.state_encoder` exists: 4 keys, 54.6M params, 32-embodiment (128→1024→1536)
+- ✅ **`future_tokens` ABSENT** — N1.6's DiT input sequence is simpler than lerobot's latest code: `sa_embs = cat(state_token, action_tokens)` only. No learnable prefix tokens.
 - ✅ `backbone.model.vision_model.*`: 448 keys, 427.7M params (SigLIP-so400m)
 - ✅ `backbone.model.language_model.*`: 179 keys, 1426.7M params (Qwen2)
 - ✅ `backbone.model.mlp1.*`: 6 keys, 13.6M params — Sequential(LayerNorm(4608) → Linear(4608→2048) → GELU → Linear(2048→2048))
+- ✅ DiT `action_head.model.*` 4 sub-prefixes: timestep_encoder, transformer_blocks (448 keys = 32 layers), proj_out_1 (Linear(1536→3072) final AdaLN), proj_out_2 (Linear(1536→1024) velocity proj)
 - ✅ DiT hidden = 1536, VLM output = 2048, state hidden = 1024, pixel-shuffled vision = 4608
 
 Nothing pending. Full tree confirmed.
+
+## Simplified N1.6 DiT sequence (corrected)
+
+Lerobot's latest code in `flow_matching_action_head.py:324-325`:
+```python
+sa_embs = torch.cat((state_features, future_tokens, action_features), dim=1)
+```
+
+N1.6's actual sequence (no future_tokens in state dict):
+```python
+sa_embs = torch.cat((state_features, action_features), dim=1)
+```
+
+This is probably a newer lerobot feature not present in N1.6. Port uses the simpler 2-component concat.
 
 ---
 
