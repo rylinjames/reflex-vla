@@ -142,16 +142,110 @@ def build_eagle_export_stack(
         Eagle25VLConfig,
     )
 
-    # Derive config from state_dict shapes
+    # Derive config from state_dict shapes (Eagle's default dims are for
+    # larger variants; N1.6 uses a specific Qwen2-0.5B + SigLIP-so400m).
     vocab_size, llm_hidden = state_dict[
         "backbone.model.language_model.model.embed_tokens.weight"
     ].shape
+    # Qwen2 MLP: gate_proj is [intermediate, hidden]. Count layers.
+    llm_intermediate = state_dict[
+        "backbone.model.language_model.model.layers.0.mlp.gate_proj.weight"
+    ].shape[0]
+    # num_layers = count distinct layers.X prefixes
+    llm_num_layers = 0
+    for k in state_dict.keys():
+        if k.startswith("backbone.model.language_model.model.layers."):
+            layer_idx = int(k.split(".")[5])
+            llm_num_layers = max(llm_num_layers, layer_idx + 1)
+    # Attention dims: q_proj is [hidden, hidden] for standard, [head_dim*num_q_heads, hidden] for GQA
+    q_proj_out, _ = state_dict[
+        "backbone.model.language_model.model.layers.0.self_attn.q_proj.weight"
+    ].shape
+    k_proj_out, _ = state_dict[
+        "backbone.model.language_model.model.layers.0.self_attn.k_proj.weight"
+    ].shape
+    # For Qwen2: num_key_value_heads = k_proj_out / head_dim; assume head_dim = 128 (Qwen2 standard).
+    # Actually derive: num_attention_heads × head_dim = q_proj_out.
+    # N1.6 Qwen2-0.5B: hidden=2048, q_proj_out=2048 (16 heads × 128 head_dim),
+    # k_proj_out=256 (2 kv_heads × 128 head_dim via GQA).
+    head_dim = 128  # Qwen2 default; override if shape implies otherwise
+    num_attention_heads = q_proj_out // head_dim
+    num_key_value_heads = k_proj_out // head_dim
 
-    # Build a default config. The vendored default already has eager attn.
-    # Image token index = default for Eagle 2.5 (verified at runtime)
+    # SigLIP hidden derivation: patch_embedding weight is [hidden, 3, patch, patch]
+    # for siglip_vision_model. Find it.
+    vit_patch_key = "backbone.model.vision_model.vision_model.embeddings.patch_embedding.weight"
+    if vit_patch_key in state_dict:
+        vit_hidden = state_dict[vit_patch_key].shape[0]
+    else:
+        # Fallback: look for any key with vision + "weight" and reasonable shape
+        vit_hidden = 1152  # SigLIP-so400m default
+    # SigLIP intermediate: mlp.fc1 weight [intermediate, hidden]
+    vit_fc1_key = (
+        "backbone.model.vision_model.vision_model.encoder.layers.0.mlp.fc1.weight"
+    )
+    if vit_fc1_key in state_dict:
+        vit_intermediate = state_dict[vit_fc1_key].shape[0]
+    else:
+        vit_intermediate = 4304  # SigLIP-so400m default (1152 × 3.74)
+    # SigLIP num layers
+    vit_num_layers = 0
+    vit_layer_prefix = "backbone.model.vision_model.vision_model.encoder.layers."
+    for k in state_dict.keys():
+        if k.startswith(vit_layer_prefix):
+            layer_idx = int(k[len(vit_layer_prefix):].split(".")[0])
+            vit_num_layers = max(vit_num_layers, layer_idx + 1)
+    # Image size: derive from position_embedding (SigLIP: num_positions=(size/patch)^2)
+    pos_embed_key = (
+        "backbone.model.vision_model.vision_model.embeddings.position_embedding.weight"
+    )
+    if pos_embed_key in state_dict:
+        num_positions = state_dict[pos_embed_key].shape[0]
+        # image_size = patch_size * sqrt(num_positions). Assume patch_size=14 (SigLIP-so400m default).
+        import math
+        image_size = 14 * int(math.sqrt(num_positions))
+    else:
+        image_size = 448
+
+    logger.info(
+        "[eagle-export] derived config: Qwen2 hidden=%d, intermediate=%d, "
+        "layers=%d, heads=%d/%d, vocab=%d",
+        llm_hidden, llm_intermediate, llm_num_layers,
+        num_attention_heads, num_key_value_heads, vocab_size,
+    )
+    logger.info(
+        "[eagle-export] derived config: SigLIP hidden=%d, intermediate=%d, "
+        "layers=%d, image_size=%d",
+        vit_hidden, vit_intermediate, vit_num_layers, image_size,
+    )
+
+    # Build explicit sub-configs with the derived dims.
+    vision_config_dict = {
+        "model_type": "siglip_vision_model",
+        "hidden_size": int(vit_hidden),
+        "intermediate_size": int(vit_intermediate),
+        "num_hidden_layers": int(vit_num_layers),
+        "num_attention_heads": 16,  # SigLIP-so400m default
+        "num_channels": 3,
+        "image_size": int(image_size),
+        "patch_size": 14,
+    }
+    text_config_dict = {
+        "architectures": ["Qwen2ForCausalLM"],
+        "vocab_size": int(vocab_size),
+        "hidden_size": int(llm_hidden),
+        "intermediate_size": int(llm_intermediate),
+        "num_hidden_layers": int(llm_num_layers),
+        "num_attention_heads": int(num_attention_heads),
+        "num_key_value_heads": int(num_key_value_heads),
+        "hidden_act": "silu",
+        "max_position_embeddings": 32768,
+        "tie_word_embeddings": False,
+    }
+
     cfg = Eagle25VLConfig(
-        vision_config={"model_type": "siglip_vision_model"},
-        text_config={"architectures": ["Qwen2ForCausalLM"]},
+        vision_config=vision_config_dict,
+        text_config=text_config_dict,
         image_token_index=151655,  # Qwen2-VL's default; actual may differ per-ckpt
     )
 
