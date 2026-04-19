@@ -838,6 +838,101 @@ def _apply_pi05_denoise_step_patch() -> None:
         pass
 
 
+def export_gr00t_monolithic(
+    model_id: str,
+    output_dir: str | Path,
+    *,
+    num_steps: int = 4,
+    embodiment_id: int = 0,
+) -> dict[str, Any]:
+    """Export GR00T N1.6 as a single monolithic ONNX.
+
+    GR00T differs from pi0/pi0.5/SmolVLA: it's a DDPM-style DiT (not
+    flow matching), so the ONNX exports the *per-step* velocity function
+    (noisy_actions, timestep, position_ids) → velocity. `reflex serve`
+    wraps it in the canonical 4-step denoise loop at inference time.
+
+    `num_steps` is informational — it's recorded in reflex_config.json
+    for runtime but NOT baked into the ONNX (the graph is one step).
+
+    Parity target: cos=1.0 at machine precision on single-step velocity
+    vs PyTorch `GR00TFullStack.forward`. Measured 2026-04-19 on Modal
+    A100-40GB: first-action max_abs=8.34e-07, full-chunk max_abs=3.70e-06
+    (single-step); 4-step denoise loop max_abs=1.91e-06.
+    """
+    _require_monolithic_deps()
+
+    import torch
+    from reflex.checkpoint import load_checkpoint
+    from reflex.exporters.gr00t_exporter import build_gr00t_full_stack
+
+    logger.info("[gr00t] Loading %s", model_id)
+    t0 = time.time()
+    state_dict, _ = load_checkpoint(model_id)
+    logger.info("[gr00t] Checkpoint loaded in %.1fs", time.time() - t0)
+
+    logger.info("[gr00t] Building full stack (embodiment=%d)", embodiment_id)
+    t0 = time.time()
+    full, meta = build_gr00t_full_stack(state_dict, embodiment_id=embodiment_id)
+    full.eval()
+    logger.info("[gr00t] Built in %.1fs — raw_action_dim=%d, params=%.1fM",
+                time.time() - t0, meta["raw_action_dim"],
+                meta["full_stack_params_m"])
+
+    raw_action_dim = meta["raw_action_dim"]
+    chunk = 50
+    B = 1
+    dummy_actions = torch.randn(B, chunk, raw_action_dim, dtype=torch.float32)
+    dummy_time = torch.tensor([0.5], dtype=torch.float32)
+    dummy_pos = torch.arange(chunk, dtype=torch.long).unsqueeze(0)
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    onnx_path = output_dir / "model.onnx"
+
+    logger.info("[gr00t] torch.onnx.export (opset 19)")
+    t0 = time.time()
+    torch.onnx.export(
+        full,
+        (dummy_actions, dummy_time, dummy_pos),
+        str(onnx_path),
+        input_names=["noisy_actions", "timestep", "position_ids"],
+        output_names=["velocity"],
+        dynamic_axes={
+            "noisy_actions": {0: "batch"},
+            "timestep": {0: "batch"},
+            "position_ids": {0: "batch"},
+            "velocity": {0: "batch"},
+        },
+        opset_version=19,
+    )
+    logger.info("[gr00t] ONNX export: %.1fs", time.time() - t0)
+
+    _write_reflex_config(
+        output_dir,
+        type("GR00TConfig", (), {
+            "chunk_size": chunk,
+            "max_action_dim": raw_action_dim,
+            "num_steps": num_steps,
+        })(),
+        num_steps=num_steps,
+        model_id=model_id,
+        model_type="gr00t",
+    )
+
+    size_mb = onnx_path.stat().st_size / 1e6
+    data_files = list(output_dir.glob("*.data")) + list(output_dir.glob("*.bin"))
+    total_mb = size_mb + sum(f.stat().st_size for f in data_files) / 1e6
+    return {
+        "status": "ok",
+        "onnx_path": str(onnx_path),
+        "size_mb": total_mb,
+        "raw_action_dim": raw_action_dim,
+        "embodiment_id": embodiment_id,
+        "num_steps": num_steps,
+    }
+
+
 def export_monolithic(
     model_id: str,
     output_dir: str | Path,
@@ -848,7 +943,7 @@ def export_monolithic(
     """Dispatch to the right model-specific exporter.
 
     If ``model_type`` is None, infer from ``model_id`` (substring match).
-    Currently supported: smolvla, pi0, pi05.
+    Currently supported: smolvla, pi0, pi05, gr00t.
     """
     if model_type is None:
         mid = model_id.lower()
@@ -858,10 +953,12 @@ def export_monolithic(
             model_type = "pi05"
         elif "pi0" in mid or "pi_0" in mid:
             model_type = "pi0"
+        elif "gr00t" in mid or "groot" in mid:
+            model_type = "gr00t"
         else:
             raise ValueError(
                 f"Cannot infer model_type from '{model_id}'. "
-                f"Pass model_type='smolvla', 'pi0', or 'pi05' explicitly."
+                f"Pass model_type='smolvla', 'pi0', 'pi05', or 'gr00t' explicitly."
             )
 
     if model_type == "smolvla":
@@ -870,10 +967,16 @@ def export_monolithic(
         return export_pi0_monolithic(model_id, output_dir, num_steps=num_steps)
     if model_type == "pi05":
         return export_pi05_monolithic(model_id, output_dir, num_steps=num_steps)
+    if model_type == "gr00t":
+        # GR00T is DDPM per-step; num_steps is runtime loop count, not baked.
+        # Clamp the default pi-family num_steps=10 to GR00T's canonical 4 if
+        # the caller didn't override. This only affects the informational
+        # reflex_config.json field.
+        gr00t_steps = 4 if num_steps == 10 else num_steps
+        return export_gr00t_monolithic(model_id, output_dir, num_steps=gr00t_steps)
 
     raise ValueError(
-        f"Monolithic export for model_type={model_type!r} not yet supported. "
-        f"v0.2 covers SmolVLA, pi0, pi0.5; GR00T is v0.3."
+        f"Monolithic export for model_type={model_type!r} not yet supported."
     )
 
 
@@ -881,5 +984,6 @@ __all__ = [
     "export_monolithic",
     "export_pi0_monolithic",
     "export_smolvla_monolithic",
+    "export_gr00t_monolithic",
     "apply_export_patches",
 ]

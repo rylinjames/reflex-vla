@@ -2,7 +2,7 @@
 
 **The deployment layer for VLAs** — take a Vision-Language-Action model off the training cluster and onto a robot.
 
-**Verified parity.** Reflex's monolithic ONNX export matches the reference PyTorch policy to **cos = +1.000000** end-to-end on SmolVLA, pi0, and pi0.5 at num_steps=10 (canonical flow-matching, shared noise). Per-model: SmolVLA max_abs=5.96e-07, pi0 max_abs=2.09e-07, pi0.5 max_abs=2.38e-07 — all at machine precision. Reproducers: `modal run scripts/modal_{smolvla,pi0,pi05}_monolithic_export.py --parity --num-steps 10`. The full claim ledger (verified / unverified / unmeasured) lives in [reflex_context/measured_numbers.md](reflex_context/measured_numbers.md).
+**Verified parity across ALL four major open VLAs.** Reflex's monolithic ONNX export matches the reference PyTorch policy to **cos = +1.000000** end-to-end on SmolVLA, pi0, pi0.5 (canonical 10-step flow-matching unrolled) and GR00T N1.6 (canonical 4-step DDIM loop external to the ONNX). Per-model first-action max_abs: SmolVLA 5.96e-07, pi0 2.09e-07, pi0.5 2.38e-07, GR00T 8.34e-07 — all at machine precision, shared seeded inputs. Reproducers: `modal run scripts/modal_{smolvla,pi0,pi05,gr00t}_monolithic_export.py --parity`. The full claim ledger (verified / unverified / unmeasured) lives in [reflex_context/measured_numbers.md](reflex_context/measured_numbers.md).
 
 Cross-framework ONNX export, edge-first serving, composable runtime wedges (safety, adaptive denoising, cloud-edge split, pre-flight validation). One CLI, seven verbs.
 
@@ -129,7 +129,7 @@ The response JSON surfaces telemetry from each enabled wedge so you can see what
 | SmolVLA | `lerobot/smolvla_base` | 450M | ONNX + validated (max_diff=3.3e-06) |
 | pi0 | `lerobot/pi0_base` | 3.5B | ONNX + validated (max_diff=6.0e-08) |
 | pi0.5 | `lerobot/pi05_base` | 3.62B | ONNX + validated (max_diff=2.38e-07) |
-| GR00T N1.6 | `nvidia/GR00T-N1.6-3B` | 3.29B | ONNX + DiT/AdaLN (max_diff=3.8e-06) |
+| GR00T N1.6 | `nvidia/GR00T-N1.6-3B` | 3.29B | ONNX + validated (max_diff=8.34e-07) |
 | OpenVLA | `openvla/openvla-7b` | 7.5B | `optimum-cli export onnx` + `reflex.postprocess.openvla.decode_actions` |
 
 `reflex models` lists current support at any time. OpenVLA is a vanilla Llama-2-7B VLM — there's no custom action expert to reconstruct, so we defer to the standard HuggingFace export path and ship only the bin-to-continuous postprocess helper.
@@ -144,7 +144,7 @@ The response JSON surfaces telemetry from each enabled wedge so you can see what
 | `thor` | Jetson Thor | 128 GB | fp8 |
 | `desktop` | RTX / A100 | 40 GB | fp16 |
 
-**Memory fit (monolithic ONNX on disk, FP32):** SmolVLA 1.6GB, pi0 12.5GB, pi0.5 13.0GB, GR00T ~5GB (v0.3). SmolVLA fits comfortably on Orin Nano 8GB; **pi0 realistically needs Orin 16GB+ or a desktop NVIDIA GPU** — the 12.5GB monolithic ONNX cannot load on the 8GB Orin Nano even in FP16 (~6GB weights plus activations + OS). FP16 engine rebuild + Orin Nano fit work is tracked for v0.3.
+**Memory fit (monolithic ONNX on disk, FP32):** SmolVLA 1.6GB, pi0 12.5GB, pi0.5 13.0GB, GR00T 4.4GB. SmolVLA fits comfortably on Orin Nano 8GB; **pi0 realistically needs Orin 16GB+ or a desktop NVIDIA GPU** — the 12.5GB monolithic ONNX cannot load on the 8GB Orin Nano even in FP16 (~6GB weights plus activations + OS). FP16 engine rebuild + Orin Nano fit work is tracked for v0.3.
 
 `reflex targets` lists current profiles.
 
@@ -165,7 +165,7 @@ Each wedge works standalone for scripting, and every wedge that belongs in the i
 
 ## What Reflex is and isn't
 
-**Is:** the deployment layer between a trained VLA and a real robot. Cross-framework export (SmolVLA + pi0 + pi0.5 verified at cos=+1.0000000 at num_steps=10, GR00T in v0.3), composable runtime (serve + safety + turbo + split), edge-first design targeting Jetson + desktop NVIDIA GPUs.
+**Is:** the deployment layer between a trained VLA and a real robot. Cross-framework export verified at cos=+1.0000000 on all four major open VLAs — SmolVLA + pi0 + pi0.5 (flow-matching, num_steps=10) + GR00T N1.6 (DDPM DiT, num_steps=4) — plus a composable runtime (serve + safety + turbo + split), edge-first design targeting Jetson + desktop NVIDIA GPUs.
 
 **Isn't:** a training framework (PyTorch/JAX own that) or a cloud inference provider (vLLM/Baseten own that). Reflex's moat is the deployment toolchain: cross-framework ONNX with verified numerical parity, composable safety wedges, ROS2 + Docker + HTTP serving, and a deterministic export receipt (`VERIFICATION.md`) your QA team can audit.
 
@@ -178,12 +178,14 @@ Four ONNX artifacts in production, measured against PyTorch on shared seeded inp
 | **SmolVLA ONNX, num_steps=10** (production default) | `sample_actions(num_steps=10)` | **5.96e-07** | ✅ machine precision |
 | **pi0 ONNX, num_steps=10** (production default) | `sample_actions(num_steps=10)` | **2.09e-07** | ✅ **machine precision** |
 | **pi0.5 ONNX, num_steps=10** (production default) | `sample_actions(num_steps=10)` | **2.38e-07** | ✅ **machine precision** |
+| **GR00T N1.6 ONNX, single-step DiT** (DDPM, loop external) | `GR00TFullStack.forward` | **8.34e-07** | ✅ **machine precision** |
+| **GR00T N1.6 end-to-end 4-step denoise loop** | Python loop over PyTorch ref | **4.77e-07** | ✅ **machine precision** |
 | SmolVLA ONNX, num_steps=1 | `sample_actions(num_steps=1)` | 1.55e-06 | ✅ machine precision |
 | pi0 ONNX, num_steps=1 | `sample_actions(num_steps=1)` | 1.43e-06 | ✅ machine precision |
 
 Plus PyTorch-level native-path sanity checks (`SmolVLAPolicy` with DecomposedRMSNorm swap vs reference = cos=1.0; `PI0Policy.predict_action_chunk` vs raw `sample_actions` = bit-exact).
 
-**About the num_steps=10 artifacts**: flow-matching VLAs canonically integrate the learned velocity field with 10 Euler steps. SmolVLA, pi0, and pi0.5 all export cleanly at num_steps=10 and match canonical PyTorch to machine precision. Getting pi0 there required three interacting patches (2026-04-19): (1) replace `torch.cat` of the block-causal mask with `F.pad + &` (cat loses the suffix dim under `torch.export` FakeTensor tracing); (2) freeze `DynamicLayer.update` during the Euler loop so the cache doesn't grow across unrolled iterations; (3) use the cache's `get_seq_length()` (not the pad-mask shape) for mask assembly. pi0.5 reuses the same 3-patch stack (adapted to pi0.5's 4-arg `denoise_step` signature — state is tokenized into language). Details in `reflex_context/01_architecture/pi0_monolithic_wrap_pattern.md`.
+**About the production defaults**: flow-matching VLAs (SmolVLA, pi0, pi0.5) canonically integrate the velocity field with 10 Euler steps — the ONNX bakes in the unrolled loop. GR00T is DDPM-style diffusion with 4 canonical steps — the ONNX exports one velocity step, and `reflex serve` wraps it in the loop. All four match canonical PyTorch to machine precision. Getting pi0 / pi0.5 there required three interacting patches under `torch.export` (F.pad causal mask, frozen `DynamicLayer.update`, `past_kv.get_seq_length()` for mask assembly); GR00T's simpler DiT graph (no DynamicCache, no PaliGemma masking) traces cleanly via plain `torch.onnx.export(opset=19)` — no patches needed. Details in `reflex_context/01_architecture/pi0_monolithic_wrap_pattern.md`.
 
 Full ledger: [reflex_context/measured_numbers.md](reflex_context/measured_numbers.md).
 

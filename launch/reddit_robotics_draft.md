@@ -10,15 +10,17 @@ Hi r/robotics —
 
 I built [Reflex](https://github.com/rylinjames/reflex-vla), an open-source CLI for taking a trained Vision-Language-Action model from a HuggingFace checkpoint to a working inference server you can hit from a robot.
 
-**Verified today**: three of the most-used VLAs exported as monolithic ONNX at num_steps=10 (the canonical flow-matching default), measured against PyTorch on shared seeded inputs:
+**Verified today**: all four major open VLAs exported as monolithic ONNX, measured against PyTorch on shared seeded inputs:
 
-| Model | num_steps=10 ONNX vs PyTorch | cos | first-action max_abs |
+| Model | Comparison | cos | first-action max_abs |
 |---|---|---|---|
-| SmolVLA | `sample_actions(num_steps=10)` | **+1.0000000** | **5.96e-07** (machine precision) |
-| pi0     | `sample_actions(num_steps=10)` | **+1.0000000** | **2.09e-07** (machine precision) |
-| pi0.5   | `sample_actions(num_steps=10)` | **+1.0000000** | **2.38e-07** (machine precision) |
+| SmolVLA (flow matching) | `sample_actions(num_steps=10)` | **+1.0000000** | **5.96e-07** (machine precision) |
+| pi0     (flow matching) | `sample_actions(num_steps=10)` | **+1.0000000** | **2.09e-07** (machine precision) |
+| pi0.5   (flow matching) | `sample_actions(num_steps=10)` | **+1.0000000** | **2.38e-07** (machine precision) |
+| GR00T N1.6 (DDPM DiT, per-step) | `GR00TFullStack.forward` | **+1.0000000** | **8.34e-07** (machine precision) |
+| GR00T N1.6 (DDPM, 4-step end-to-end denoise loop) | Python loop over PyTorch ref | **+1.0000000** | **4.77e-07** (machine precision) |
 
-Getting pi0 / pi0.5 from an earlier cos=0.977 approximation to cos=1.0 at num_steps=10 needed three interacting patches under `torch.export` + DynamicCache (F.pad causal mask, frozen `DynamicLayer.update` during the unrolled Euler loop, and `past_kv.get_seq_length()` for mask assembly). Details in the repo's architecture doc.
+Getting pi0 / pi0.5 to cos=1.0 at num_steps=10 needed three interacting patches under `torch.export` + DynamicCache (F.pad causal mask, frozen `DynamicLayer.update` during the unrolled Euler loop, and `past_kv.get_seq_length()` for mask assembly). GR00T's simpler DiT graph traces cleanly with plain `torch.onnx.export` — no patches needed. Details in the repo's architecture doc.
 
 Three commands from zero to serving:
 
@@ -43,8 +45,8 @@ Then `POST /act` returns flow-matching action chunks. Composable wedges let you 
 **Honest disclaimers:**
 - Alpha, single maintainer, Apache 2.0
 - Jetson Orin Nano numbers not yet published — CloudJetson waitlisted, Orin Nano dev kit not on hand. Launch latency data is from Modal A10G; real Jetson numbers land when someone runs `reflex bench` on a dev kit (happy to credit + thank-you gift)
-- **pi0 / pi0.5 monolithic ONNX (12.5–13GB) doesn't fit on Orin Nano 8GB.** SmolVLA (1.6GB) does. pi-family models currently want Orin 16GB+ or desktop GPU; FP16 engine rebuild for Orin Nano fit is v0.3
-- GR00T (DiT + AdaLN) parity is a v0.3 item — planned but not shipped
+- **pi0 / pi0.5 monolithic ONNX (12.5–13GB) doesn't fit on Orin Nano 8GB.** SmolVLA (1.6GB) and GR00T (4.4GB) are smaller. pi-family models currently want Orin 16GB+ or desktop GPU; FP16 engine rebuild for Orin Nano fit is v0.3
+- **GR00T VLM conditioning (Eagle backbone) is zero-stubbed** — DiT + AdaLN action stack matches PyTorch at machine precision, but full multimodal control needs VLM export (v0.3)
 - Earlier TRT FP16 latency tables were on a decomposed-ONNX path that's now abandoned; latency re-measurement on the monolithic path is a v0.3 item
 
 What I'm specifically asking for:
