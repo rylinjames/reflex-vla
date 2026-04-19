@@ -13,7 +13,12 @@ import pytest
 
 from reflex.exporters.fp16_convert import (
     FP16_OP_BLOCKLIST,
+    _build_dtype_map,
+    _DT_FLOAT,
+    _DT_FLOAT16,
+    _DT_INT64,
     estimate_fp16_size_bytes,
+    fix_fp16_dtype_mismatches,
     parity_gate,
 )
 
@@ -97,6 +102,125 @@ class TestBlocklist:
         catches any precision regression.
         """
         assert FP16_OP_BLOCKLIST == ()
+
+
+@pytest.fixture
+def _onnx():
+    """Skip these tests if onnx isn't available in the test env."""
+    pytest.importorskip("onnx")
+    return pytest.importorskip("onnx")
+
+
+def _make_model_with_mismatch(onnx, tmp_path, save: bool = True):
+    """Build a tiny model: two graph inputs (one FP32, one FP16) feed
+    into a Mul. Exactly the pattern that trips ORT on FP16 conversions.
+    """
+    from onnx import helper, TensorProto
+
+    a = helper.make_tensor_value_info("a", TensorProto.FLOAT, [4])
+    b = helper.make_tensor_value_info("b", TensorProto.FLOAT16, [4])
+    out = helper.make_tensor_value_info("out", TensorProto.FLOAT16, [4])
+
+    mul = helper.make_node("Mul", inputs=["a", "b"], outputs=["out"], name="mul0")
+    graph = helper.make_graph([mul], "mismatch", [a, b], [out])
+    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 19)])
+    model.ir_version = 9
+    if save:
+        p = tmp_path / "mismatch.onnx"
+        onnx.save(model, str(p))
+        return p, model
+    return None, model
+
+
+class TestDtypeMap:
+    def test_graph_inputs_and_initializers(self, _onnx, tmp_path):
+        _, model = _make_model_with_mismatch(_onnx, tmp_path, save=False)
+        dt = _build_dtype_map(model)
+        assert dt["a"] == _DT_FLOAT
+        assert dt["b"] == _DT_FLOAT16
+        # Mul preserves first-input dtype in our rules; check output is tracked.
+        assert "out" in dt
+
+    def test_cast_op_uses_to_attribute(self, _onnx):
+        from onnx import helper, TensorProto
+
+        x = helper.make_tensor_value_info("x", TensorProto.FLOAT, [4])
+        y = helper.make_tensor_value_info("y", TensorProto.FLOAT16, [4])
+        cast = helper.make_node("Cast", ["x"], ["y"], to=TensorProto.FLOAT16)
+        graph = helper.make_graph([cast], "cast", [x], [y])
+        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 19)])
+
+        dt = _build_dtype_map(model)
+        assert dt["y"] == _DT_FLOAT16
+
+    def test_shape_op_emits_int64(self, _onnx):
+        from onnx import helper, TensorProto
+
+        x = helper.make_tensor_value_info("x", TensorProto.FLOAT, [4])
+        s = helper.make_tensor_value_info("s", TensorProto.INT64, [1])
+        shape = helper.make_node("Shape", ["x"], ["s"])
+        graph = helper.make_graph([shape], "shape", [x], [s])
+        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 19)])
+
+        dt = _build_dtype_map(model)
+        assert dt["s"] == _DT_INT64
+
+
+class TestDtypeFixPass:
+    def test_inserts_cast_on_fp32_fp16_mismatch(self, _onnx, tmp_path):
+        p, _ = _make_model_with_mismatch(_onnx, tmp_path)
+        count = fix_fp16_dtype_mismatches(p)
+        assert count == 1
+
+        # Reload and verify: there should now be a Cast node before the Mul.
+        fixed = _onnx.load(str(p))
+        op_types = [n.op_type for n in fixed.graph.node]
+        assert op_types == ["Cast", "Mul"]
+        # The Mul's first input should now be the Cast's output (FP16).
+        mul_node = next(n for n in fixed.graph.node if n.op_type == "Mul")
+        cast_node = next(n for n in fixed.graph.node if n.op_type == "Cast")
+        assert mul_node.input[0] == cast_node.output[0]
+        # The Cast must cast TO float16.
+        to_attr = next(a for a in cast_node.attribute if a.name == "to")
+        assert to_attr.i == _DT_FLOAT16
+
+    def test_noop_when_already_consistent(self, _onnx, tmp_path):
+        from onnx import helper, TensorProto
+
+        # Two FP16 inputs into Mul — no Cast needed.
+        a = helper.make_tensor_value_info("a", TensorProto.FLOAT16, [4])
+        b = helper.make_tensor_value_info("b", TensorProto.FLOAT16, [4])
+        out = helper.make_tensor_value_info("out", TensorProto.FLOAT16, [4])
+        mul = helper.make_node("Mul", ["a", "b"], ["out"], name="mul0")
+        graph = helper.make_graph([mul], "clean", [a, b], [out])
+        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 19)])
+        p = tmp_path / "clean.onnx"
+        _onnx.save(model, str(p))
+
+        count = fix_fp16_dtype_mismatches(p)
+        assert count == 0
+
+    def test_handles_where_op_bool_input(self, _onnx, tmp_path):
+        """Where has a bool first input — that's not a dtype mismatch even
+        though bool != float. Only inputs[1] and [2] need consistent
+        floating dtype."""
+        from onnx import helper, TensorProto
+
+        cond = helper.make_tensor_value_info("cond", TensorProto.BOOL, [4])
+        x = helper.make_tensor_value_info("x", TensorProto.FLOAT, [4])
+        y = helper.make_tensor_value_info("y", TensorProto.FLOAT16, [4])
+        out = helper.make_tensor_value_info("out", TensorProto.FLOAT16, [4])
+        w = helper.make_node("Where", ["cond", "x", "y"], ["out"], name="w0")
+        graph = helper.make_graph([w], "where", [cond, x, y], [out])
+        model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 19)])
+        p = tmp_path / "where.onnx"
+        _onnx.save(model, str(p))
+
+        count = fix_fp16_dtype_mismatches(p)
+        assert count == 1  # Cast on x, not on cond.
+        fixed = _onnx.load(str(p))
+        cast_node = next(n for n in fixed.graph.node if n.op_type == "Cast")
+        assert cast_node.input[0] == "x"  # the FP32 input got cast, not cond.
 
 
 class TestImportGuard:
