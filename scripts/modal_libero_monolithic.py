@@ -344,13 +344,13 @@ def run_libero10():
                 ),
                 "subname": "libero_10",
                 "mode": "sync",
-                # 1 ep / task × 10 tasks = 10 total. Fast iteration.
-                # Single-task quick-check mode: 1 task × 1 ep = ~5 min total
-                # instead of 30+ min for all 10 tasks. Bump after first real
-                # non-zero number proves the pipeline works.
+                # Diagnostic mode (2026-04-19): max_steps=30 cuts each task
+                # from ~2.5 min to ~15s. Enough steps for the first predict()
+                # to fire + for the adapter log's diagnostic to populate.
+                # Bump back to 300 once we're hunting actual task-success.
                 "episodes_per_task": 1,
-                "max_steps": 300,
-                "task_order": [0],  # single task only — first LIBERO-10 task
+                "max_steps": 30,
+                "task_order": [0],  # single task — the first LIBERO-10 task
                 "params": {
                     "suite": "libero_10",
                     "seed": 7,
@@ -533,6 +533,13 @@ print('SMOKE TEST PASS', flush=True)
                 print(f"  [vla-eval] {line.rstrip()}")
                 all_stdout.append(line)
                 last_output = time.time()
+                # Per-task trigger (2026-04-19): dump adapter log as soon as
+                # task 1 completes. Early signal is the whole point of
+                # diagnostic mode — don't wait 10 tasks to see the first
+                # predict's batch-key schema.
+                if "ep0:" in line and ("[1/" in line):
+                    print("  [diagnostic-trigger] task 1 done — dumping adapter log ...")
+                    _dump_adapter_tail()
 
     # Drain any remaining output after exit
     if eval_proc.stdout:
