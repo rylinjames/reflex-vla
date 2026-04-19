@@ -110,20 +110,27 @@ def smoke_test(model_id: str = "nvidia/GR00T-N1.6-3B"):
     for k, v in meta.items():
         print(f"         {k}: {v}")
 
-    # Dummy inputs
+    # Dummy inputs — use the image_size + token count derived from the
+    # checkpoint (N1.6 SigLIP was trained at 224×224 per position_embedding).
     B = 1
-    H = W = 448  # SigLIP-so400m image size (1024 patches)
-    # SigLIP 1024 patches × pixel_shuffle 0.5² = 256 image tokens. Plus
-    # a short text prompt. Pick seq big enough to fit both.
-    seq = 280
+    # Can't pull from `meta` directly inside modal container — re-derive
+    # from state_dict or use published defaults. N1.6 uses 224×224.
+    import math as _math
+    pos_embed_key = (
+        "backbone.model.vision_model.vision_model.embeddings.position_embedding.weight"
+    )
+    num_positions = state_dict[pos_embed_key].shape[0]
+    patches_per_side = int(_math.sqrt(num_positions))
+    patch_size = 14
+    H = W = patches_per_side * patch_size  # 16 * 14 = 224
+    # Pixel shuffle scale_factor=0.5 concatenates 2×2 patches into 1 token.
+    n_image_tokens = num_positions // 4
+    seq = n_image_tokens + 16  # image tokens + short text prompt
     vocab = meta["vocab_size"]
     img_tok = meta["image_token_index"]
 
     torch.manual_seed(42)
     pixel_values = torch.randn(B, 3, H, W, device="cuda", dtype=torch.float32)
-    # Construct input_ids with image_token placeholders for the vision embed count.
-    # Eagle uses 256 image tokens per tile (1024 patches → pixel_shuffle 4× → 256).
-    n_image_tokens = 256
     # Remaining slots: text tokens. Use token id 0 as a trivial filler.
     assert seq > n_image_tokens, f"seq={seq} must exceed image_tokens={n_image_tokens}"
     input_ids = torch.zeros(B, seq, dtype=torch.long, device="cuda")
@@ -180,11 +187,18 @@ def export(model_id: str = "nvidia/GR00T-N1.6-3B"):
     stack = stack.to("cuda")
     print(f"[export] Built in {time.time()-t0:.1f}s  params={meta['total_params_m']:.1f}M")
 
-    # Dummy inputs (mirror smoke_test — single tile, 256 image tokens)
+    # Derive image_size + image-token count from checkpoint (N1.6 uses 224×224).
+    import math as _math
+    pos_embed_key = (
+        "backbone.model.vision_model.vision_model.embeddings.position_embedding.weight"
+    )
+    num_positions = state_dict[pos_embed_key].shape[0]
+    patches_per_side = int(_math.sqrt(num_positions))
+    patch_size = 14
     B = 1
-    H = W = 448
-    n_image_tokens = 256
-    seq = n_image_tokens + 16  # image tokens + short text prompt
+    H = W = patches_per_side * patch_size
+    n_image_tokens = num_positions // 4  # pixel_shuffle 0.5^2
+    seq = n_image_tokens + 16
     img_tok = meta["image_token_index"]
 
     torch.manual_seed(42)
