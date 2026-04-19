@@ -131,13 +131,18 @@ def run_parity(model_id: str = "nvidia/GR00T-N1.6-3B"):
     # ─── Path B: lerobot's action head (reference) ───────────────
     print(f"\n[parity] Path B (lerobot's FlowMatchingActionHead reference)")
     t0 = time.time()
+    # lerobot 0.5.1 names the class with lowercase 'm': FlowmatchingActionHead.
+    # (Not FlowMatchingActionHead.) Importing it directly isn't strictly
+    # required since we load via GrootPolicy.from_pretrained below — the
+    # class is present on the loaded policy regardless.
     try:
         from lerobot.policies.groot.action_head.flow_matching_action_head import (
-            FlowMatchingActionHead,
+            FlowmatchingActionHead,
         )
     except ImportError as e:
-        print(f"[parity] Could not import lerobot FlowMatchingActionHead: {e}")
-        return {"status": "fail", "reason": str(e)}
+        print(f"[parity] Flowmatching import note: {e}")
+        # Non-fatal — we only need GrootPolicy.from_pretrained which brings
+        # in the correct class transparently.
 
     # Instantiate from config. N1.6 doesn't bundle action_head_config.json
     # directly — we need to construct the FlowMatchingActionHeadConfig.
