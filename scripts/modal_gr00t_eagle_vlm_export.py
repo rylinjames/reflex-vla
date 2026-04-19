@@ -262,18 +262,123 @@ def export(model_id: str = "nvidia/GR00T-N1.6-3B"):
     }
 
 
+@app.function(
+    image=image,
+    gpu="A100-40GB",
+    timeout=1800,
+    volumes={HF_CACHE_PATH: hf_cache, ONNX_OUTPUT_PATH: onnx_output},
+    secrets=[_hf_secret()],
+)
+def parity_test(model_id: str = "nvidia/GR00T-N1.6-3B"):
+    """Verify eagle_vlm.onnx output matches PyTorch EagleExportStack."""
+    import math as _math
+    import time
+    from pathlib import Path
+
+    import numpy as np
+    import onnxruntime as ort
+    import torch
+
+    from reflex.checkpoint import load_checkpoint
+    from reflex.exporters.eagle_export_stack import build_eagle_export_stack
+
+    onnx_path = Path(ONNX_OUTPUT_PATH) / "eagle_vlm" / "eagle_vlm.onnx"
+    if not onnx_path.exists():
+        return {"status": "fail", "reason": f"{onnx_path} not found — run --export first"}
+
+    print(f"[parity] Loading {model_id}...")
+    state_dict, _ = load_checkpoint(model_id)
+    stack, meta = build_eagle_export_stack(state_dict)
+    stack = stack.to("cuda").eval()
+    print(f"[parity] PyTorch built: {meta['total_params_m']:.1f}M params")
+
+    pos_embed_key = (
+        "backbone.model.vision_model.vision_model.embeddings.position_embedding.weight"
+    )
+    num_positions = state_dict[pos_embed_key].shape[0]
+    patches_per_side = int(_math.sqrt(num_positions))
+    patch_size = 14
+    B = 1
+    H = W = patches_per_side * patch_size
+    n_image_tokens = num_positions // 4
+    seq = n_image_tokens + 16
+    img_tok = meta["image_token_index"]
+    vocab = meta["vocab_size"]
+
+    torch.manual_seed(1337)
+    pixel_values = torch.randn(B, 3, H, W, device="cuda", dtype=torch.float32)
+    input_ids = torch.zeros(B, seq, dtype=torch.long, device="cuda")
+    input_ids[:, :n_image_tokens] = img_tok
+    input_ids[:, n_image_tokens:] = torch.randint(
+        low=1, high=min(32000, vocab), size=(B, seq - n_image_tokens), device="cuda",
+    )
+    attention_mask = torch.ones(B, seq, dtype=torch.long, device="cuda")
+    image_flags = torch.tensor([1], device="cuda", dtype=torch.long)
+
+    print(f"[parity] PyTorch forward...")
+    t0 = time.time()
+    with torch.no_grad():
+        pt_out = stack(pixel_values, input_ids, attention_mask, image_flags)
+    pt_out_np = pt_out.detach().cpu().numpy().astype(np.float32)
+    print(f"[parity] PyTorch: shape={pt_out_np.shape}  "
+          f"mean={pt_out_np.mean():+.4f}  std={pt_out_np.std():.4f}  "
+          f"[{time.time()-t0:.2f}s]")
+
+    del stack
+    torch.cuda.empty_cache()
+
+    print(f"[parity] Loading ONNX (ORT CUDA)...")
+    t0 = time.time()
+    providers = [("CUDAExecutionProvider", {"device_id": 0}), "CPUExecutionProvider"]
+    sess = ort.InferenceSession(str(onnx_path), providers=providers)
+    print(f"[parity] ORT loaded in {time.time()-t0:.1f}s")
+    print(f"[parity] ONNX forward...")
+    t0 = time.time()
+    onnx_out = sess.run(
+        ["hidden_states"],
+        {
+            "pixel_values": pixel_values.cpu().numpy().astype(np.float32),
+            "input_ids": input_ids.cpu().numpy().astype(np.int64),
+            "attention_mask": attention_mask.cpu().numpy().astype(np.int64),
+            "image_flags": image_flags.cpu().numpy().astype(np.int64),
+        },
+    )[0].astype(np.float32)
+    print(f"[parity] ONNX: shape={onnx_out.shape}  "
+          f"mean={onnx_out.mean():+.4f}  std={onnx_out.std():.4f}  "
+          f"[{time.time()-t0:.2f}s]")
+
+    diff = np.abs(pt_out_np - onnx_out)
+    max_abs = float(diff.max())
+    mean_abs = float(diff.mean())
+    a = pt_out_np.flatten().astype(np.float64)
+    b = onnx_out.flatten().astype(np.float64)
+    cos = float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-12))
+    print(f"[parity] max_abs={max_abs:.6e}  mean_abs={mean_abs:.6e}  cos={cos:+.6f}")
+
+    verdict = "PASS" if (cos > 0.9999 and max_abs < 5e-3) else "FAIL"
+    print(f"[parity] {verdict}")
+
+    return {
+        "status": "ok",
+        "verdict": verdict,
+        "cos_sim": cos,
+        "max_abs": max_abs,
+        "mean_abs": mean_abs,
+        "output_shape": list(pt_out_np.shape),
+    }
+
+
 @app.local_entrypoint()
 def main(export_onnx: bool = False, parity: bool = False):
     """
       (default)   — PyTorch smoke test (build + forward + shapes)
       --export    — torch.onnx.export to eagle_vlm.onnx
-      --parity    — ONNX vs PyTorch parity (pending)
+      --parity    — ONNX vs PyTorch parity
     """
     if export_onnx:
         r = export.remote()
     elif parity:
-        print("Parity not yet implemented — run --export first")
-        return
+        r = parity_test.remote()
     else:
         r = smoke_test.remote()
     print(f"\n=== RESULT ===")

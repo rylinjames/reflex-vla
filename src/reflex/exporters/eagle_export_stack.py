@@ -59,26 +59,22 @@ class EagleExportStack(nn.Module):
         input_ids: torch.Tensor,        # [B, seq]
         vit_embeds: torch.Tensor,       # [B, vision_seq, C]
     ) -> torch.Tensor:
-        """Replace image_token_index positions in input_embeds with vit_embeds.
+        """Replace image-token positions in input_embeds with vit_embeds.
 
-        Eagle's original forward does this via a boolean mask assignment
-        (`input_embeds[selected] = ...`). That boolean indexing doesn't
-        play perfectly with torch.export; use a scatter-style expand
-        that's ONNX-friendly.
+        Export contract: image tokens are packed at the FRONT of each
+        sequence. The caller constructs input_ids as
+        `[img_tok]*vision_seq + [text tokens]*(seq - vision_seq)`.
+
+        Eagle's original forward uses `input_embeds[selected] = vit_flat`
+        (boolean-index assignment). That lowers to an index_put → Where
+        in ONNX that ORT can't broadcast when vit length (64) differs
+        from seq length (80). We bypass it with a dtype-safe cat:
+        replace the first vision_seq rows with vit_embeds, keep the
+        tail as text embeds.
         """
-        b, n, c = input_embeds.shape
-        input_embeds_flat = input_embeds.reshape(b * n, c)
-        input_ids_flat = input_ids.reshape(b * n)
-        vit_flat = vit_embeds.reshape(-1, c)  # [B * vision_seq, C]
-
-        # selected mask: positions where the text token == image_token_index
-        selected = input_ids_flat == self.image_token_index  # [B * n]
-        # If there are exactly B*vision_seq image-token positions, we can
-        # splice them 1:1 in order.
-        input_embeds_flat = input_embeds_flat.clone()
-        # We expect vit_flat.shape[0] == selected.sum(). Fill the True rows.
-        input_embeds_flat[selected] = vit_flat
-        return input_embeds_flat.reshape(b, n, c)
+        vs = vit_embeds.shape[1]
+        text_embeds = input_embeds[:, vs:, :]
+        return torch.cat([vit_embeds, text_embeds], dim=1)
 
     def forward(
         self,
