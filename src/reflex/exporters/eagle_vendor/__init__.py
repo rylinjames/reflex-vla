@@ -17,10 +17,10 @@ Public API: callers should instantiate `Eagle2_5_VLForConditionalGeneration`
 directly and feed it inputs matching `EagleBackbone.forward_eagle` from
 lerobot's GR00T wrapper.
 """
-from .modeling_eagle2_5_vl import Eagle2_5_VLForConditionalGeneration
-from .configuration_eagle2_5_vl import Eagle2_5_VLConfig
+from .modeling_eagle2_5_vl import Eagle25VLForConditionalGeneration
+from .configuration_eagle2_5_vl import Eagle25VLConfig
 
 __all__ = [
-    "Eagle2_5_VLForConditionalGeneration",
-    "Eagle2_5_VLConfig",
+    "Eagle25VLForConditionalGeneration",
+    "Eagle25VLConfig",
 ]

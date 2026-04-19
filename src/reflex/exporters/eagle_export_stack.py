@@ -136,10 +136,10 @@ def build_eagle_export_stack(
     """
     # Lazy-import the vendor so downstream files don't always pull it.
     from reflex.exporters.eagle_vendor.modeling_eagle2_5_vl import (
-        Eagle2_5_VLForConditionalGeneration,
+        Eagle25VLForConditionalGeneration,
     )
     from reflex.exporters.eagle_vendor.configuration_eagle2_5_vl import (
-        Eagle2_5_VLConfig,
+        Eagle25VLConfig,
     )
 
     # Derive config from state_dict shapes
@@ -149,14 +149,14 @@ def build_eagle_export_stack(
 
     # Build a default config. The vendored default already has eager attn.
     # Image token index = default for Eagle 2.5 (verified at runtime)
-    cfg = Eagle2_5_VLConfig(
+    cfg = Eagle25VLConfig(
         vision_config={"model_type": "siglip_vision_model"},
         text_config={"architectures": ["Qwen2ForCausalLM"]},
         image_token_index=151655,  # Qwen2-VL's default; actual may differ per-ckpt
     )
 
-    # Instantiate. The Eagle2_5_VL vendor handles submodule construction.
-    model = Eagle2_5_VLForConditionalGeneration(cfg)
+    # Instantiate. The Eagle25VL vendor handles submodule construction.
+    model = Eagle25VLForConditionalGeneration(cfg)
 
     # Load weights from state_dict — prefix is `backbone.model.*` so strip it.
     remapped = {}
