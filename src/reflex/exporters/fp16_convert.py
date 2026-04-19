@@ -129,12 +129,22 @@ def convert_fp32_to_fp16(
     dst.parent.mkdir(parents=True, exist_ok=True)
 
     # Protobuf's 2GB-per-message limit bites both `ByteSize()` AND
-    # `SerializeToString()`. Detect oversized models by checking the
-    # on-disk size of external data BEFORE loading — if weights alone
-    # exceed ~1.8GB, skip internal shape inference (which would
-    # serialize the loaded proto).
+    # `SerializeToString()`. For >~1.8GB models we can't run internal
+    # shape inference (it serializes the loaded proto). We also flip to
+    # keep_io_types=False because convert_float_to_float16's Cast-node
+    # wiring gets Mul/Add operand dtypes wrong on big graphs, producing
+    # FP32+FP16 mismatches ORT rejects. End-to-end FP16 is safer; callers
+    # cast inputs/outputs.
     on_disk_bytes = _size_with_external(src)
-    disable_shape_infer = on_disk_bytes > 1_800_000_000
+    oversized = on_disk_bytes > 1_800_000_000
+    disable_shape_infer = oversized
+    if oversized and keep_io_types:
+        logger.warning(
+            "[fp16] model is %.2f GB on disk — flipping keep_io_types=False to "
+            "avoid Mul/Add dtype-mismatch errors on oversized graphs.",
+            on_disk_bytes / 1e9,
+        )
+        keep_io_types = False
 
     logger.info("[fp16] Loading %s (%.2f GB on disk)...",
                 src, on_disk_bytes / 1e9)

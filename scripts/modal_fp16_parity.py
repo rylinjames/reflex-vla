@@ -124,10 +124,27 @@ def parity_modal(
     fp32_out = fp32_sess.run(["actions"], feed)[0]
     print(f"[parity]   FP32 shape={fp32_out.shape} in {time.time()-t0:.2f}s")
 
+    # FP16 session: for big models, the FP16 ONNX was exported with
+    # keep_io_types=False (end-to-end FP16). Detect the expected input
+    # dtype from the session metadata and cast as needed.
+    fp16_feed = {}
+    fp16_inputs = {i.name: i for i in fp16_sess.get_inputs()}
+    for k, v in feed.items():
+        meta = fp16_inputs.get(k)
+        if meta is None:
+            fp16_feed[k] = v
+            continue
+        expected = meta.type  # "tensor(float16)", "tensor(int64)", etc.
+        if "float16" in expected and v.dtype == np.float32:
+            fp16_feed[k] = v.astype(np.float16)
+        else:
+            fp16_feed[k] = v
+
     print("[parity] Running FP16...")
     t0 = time.time()
-    fp16_out = fp16_sess.run(["actions"], feed)[0]
-    print(f"[parity]   FP16 shape={fp16_out.shape} in {time.time()-t0:.2f}s")
+    fp16_out = fp16_sess.run(["actions"], fp16_feed)[0]
+    print(f"[parity]   FP16 shape={fp16_out.shape} dtype={fp16_out.dtype} "
+          f"in {time.time()-t0:.2f}s")
 
     # FP16 session outputs may be float16 if keep_io_types=True failed;
     # upcast for fair comparison.
