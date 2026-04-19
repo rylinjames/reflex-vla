@@ -184,22 +184,76 @@ def run_lerobot_native_libero(
                 steps = 0
                 done = False
                 while not done and steps < max_steps:
-                    # Apply lerobot's processor step (image flip + state concat).
-                    # The public API is the Step's __call__; the legacy name
-                    # is _process_observation. Try both.
-                    if hasattr(processor, "process_observation"):
-                        processed = processor.process_observation(obs)
-                    elif hasattr(processor, "_process_observation"):
-                        processed = processor._process_observation(obs)
-                    elif callable(processor):
-                        processed = processor(obs)
-                    else:
-                        raise RuntimeError(
-                            "LiberoProcessorStep has no known entry point"
-                        )
+                    # One-shot dump of raw obs schema on first step
+                    if steps == 0 and ep == 0 and task_idx == tasks_to_run[0]:
+                        if isinstance(obs, dict):
+                            print(f"[debug] obs keys: {sorted(obs.keys())}")
+                            for k in sorted(obs.keys()):
+                                v = obs[k]
+                                if hasattr(v, "shape"):
+                                    print(f"  obs[{k}]: shape={v.shape} dtype={v.dtype}")
+                                else:
+                                    print(f"  obs[{k}]: type={type(v).__name__}")
+                        else:
+                            print(f"[debug] obs type: {type(obs).__name__}")
+                    # Build the batch directly in the schema SmolVLAPolicy expects.
+                    # LiberoProcessorStep's output (`{'pixels': ...}`) doesn't
+                    # match prepare_images's expected observation.images.image/image2.
+                    # So bypass it and build manually.
+                    def _mk_img(arr):
+                        a = np.asarray(arr)
+                        if a.dtype != np.uint8:
+                            a = (a * 255).clip(0, 255).astype(np.uint8)
+                        t = torch.from_numpy(a).permute(2, 0, 1).float().div_(255.0).unsqueeze(0)
+                        # 180° flip per LIBERO convention
+                        return torch.flip(t, dims=[2, 3]).to("cuda")
+
+                    # Extract images — try common LIBERO obs key names
+                    img_keys_tried = []
+                    img1 = img2 = None
+                    if isinstance(obs, dict):
+                        for cand in ("agentview_image", "image", "pixels"):
+                            if cand in obs:
+                                img1 = obs[cand]; img_keys_tried.append(cand); break
+                        for cand in ("robot0_eye_in_hand_image", "image2",
+                                     "eye_in_hand_image", "wrist_image"):
+                            if cand in obs:
+                                img2 = obs[cand]; img_keys_tried.append(cand); break
+                    if img1 is None or img2 is None:
+                        print(f"[warn] missing image keys (tried: {img_keys_tried}); "
+                              f"obs keys: {list(obs.keys()) if isinstance(obs, dict) else 'not-a-dict'}")
+                    # Extract state
+                    state_keys = ["robot0_eef_pos", "state", "agent_state"]
+                    state_val = None
+                    if isinstance(obs, dict):
+                        for k in state_keys:
+                            if k in obs:
+                                state_val = obs[k]; break
+                    if state_val is None:
+                        state_val = np.zeros(8, dtype=np.float32)
+                    state_t = torch.from_numpy(np.asarray(state_val, dtype=np.float32)
+                                               .reshape(-1)[:8]).unsqueeze(0).to("cuda")
+                    if state_t.shape[-1] < 8:
+                        pad = torch.zeros(1, 8 - state_t.shape[-1], device="cuda")
+                        state_t = torch.cat([state_t, pad], dim=-1)
+
+                    # Task description — from the suite / task
+                    try:
+                        task_text = suite.get_task(task_idx).language
+                    except Exception:
+                        task_text = f"task_{task_idx}"
+                    if steps == 0:
+                        print(f"[debug] task text: {task_text!r}")
+
+                    batch = {
+                        "observation.images.image": _mk_img(img1) if img1 is not None else torch.zeros(1, 3, 256, 256, device="cuda"),
+                        "observation.images.image2": _mk_img(img2) if img2 is not None else torch.zeros(1, 3, 256, 256, device="cuda"),
+                        "observation.state": state_t,
+                        "task": [task_text],
+                    }
                     # select_action re-queries every step when n_action_steps=1
                     with torch.no_grad():
-                        action = policy.select_action(processed)
+                        action = policy.select_action(batch)
                     # Convert to numpy for env.step
                     if isinstance(action, torch.Tensor):
                         action = action.cpu().numpy()
