@@ -112,8 +112,10 @@ def smoke_test(model_id: str = "nvidia/GR00T-N1.6-3B"):
 
     # Dummy inputs
     B = 1
-    H = W = 448  # SigLIP-so400m-patch14-384 default image size
-    seq = 64     # short prompt including image token placeholder
+    H = W = 448  # SigLIP-so400m image size (1024 patches)
+    # SigLIP 1024 patches × pixel_shuffle 0.5² = 256 image tokens. Plus
+    # a short text prompt. Pick seq big enough to fit both.
+    seq = 280
     vocab = meta["vocab_size"]
     img_tok = meta["image_token_index"]
 
