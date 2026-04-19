@@ -155,11 +155,12 @@ def run_lerobot_native_libero(
     print(f"[lerobot-native] Importing lerobot env + processors...")
     from lerobot.envs.libero import LiberoEnv
     from lerobot.processor.env_processor import LiberoProcessorStep
-    import inspect as _inspect
 
-    # Introspect LiberoEnv.__init__ so we don't guess kwarg names
-    sig = _inspect.signature(LiberoEnv.__init__)
-    print(f"[lerobot-native] LiberoEnv.__init__ params: {list(sig.parameters)}")
+    # LIBERO suite object (built via libero's benchmark dict)
+    from libero.libero import benchmark as libero_bench
+    suite_name = "libero_10"
+    suite = libero_bench.get_benchmark_dict()[suite_name]()
+    print(f"[lerobot-native] Loaded libero benchmark suite: {suite_name}")
 
     # Build the processor step (handles image flip + state concat)
     processor = LiberoProcessorStep()
@@ -167,27 +168,14 @@ def run_lerobot_native_libero(
     tasks_to_run = task_indices if task_indices is not None else list(range(10))
     print(f"[lerobot-native] Running tasks: {tasks_to_run}")
 
-    def _build_env(task_idx: int):
-        """Try several parameter naming conventions for LiberoEnv."""
-        attempts = [
-            lambda: LiberoEnv(task_id=task_idx, task_suite="libero_10"),
-            lambda: LiberoEnv(task_id=task_idx, task_suite_name="libero_10"),
-            lambda: LiberoEnv(task_idx, "libero_10"),
-            lambda: LiberoEnv("libero_10", task_idx),
-        ]
-        last_err = None
-        for attempt in attempts:
-            try:
-                return attempt()
-            except TypeError as e:
-                last_err = e
-                continue
-        raise last_err
-
     for task_idx in tasks_to_run:
         task_start = time.time()
         task_result = {"task_idx": task_idx, "episodes": [], "success": 0, "total": 0}
-        env = _build_env(task_idx)
+        env = LiberoEnv(
+            task_suite=suite,
+            task_id=task_idx,
+            task_suite_name=suite_name,
+        )
         print(f"[lerobot-native] LiberoEnv built for task {task_idx}")
         for ep in range(num_episodes):
             try:
