@@ -90,28 +90,56 @@ Keep both. Use monolithic for **deployment** (production MVP), use 5-file for **
 
 Single graph with ~10× unrolled denoise steps. Attention concat ops for past_kv extension baked in as `Concat` nodes. ~14GB total with external data (Gemma-2b backbone weights are the bulk).
 
-## Current ship status (2026-04-18)
+## Ship status (2026-04-19 — UPDATE: all four VLAs verified)
 
-**num_steps=1 monolithic ONNX: VERIFIED at cos=+1.0000000 vs PyTorch.** Reproducer: `scripts/modal_pi0_monolithic_export.py --parity`. Artifact: `/onnx_out/monolithic/model.onnx` in Modal Volume `pi0-onnx-outputs` (~12.5GB).
+**All four major open VLAs verified at cos=+1.000000 machine precision.** The 835→886 bug documented in the earlier version of this doc was resolved 2026-04-19 via the **three-patch stack** (see `02_bugs_fixed/pi0_num_steps_10_three_patch_stack.md`). Historical context below retained for posterity; current status reflects the April 19 fix.
 
-**num_steps=10 monolithic: BLOCKED** on `RuntimeError: expand: attempting to expand a dimension of length 835 -> 886!` raised by onnx-diagnostic's `patched__maybe_broadcast` during torch.export shape tracing. 835 is prefix_len + state=1; 886 is prefix_len + state + chunk. Some expand op inside the unrolled 10-step loop can't reconcile the pre-suffix vs post-suffix shape. Unresolved as of this write.
+| Model | Reproducer | cos | max_abs |
+|---|---|---|---|
+| SmolVLA num_steps=10 | `modal run scripts/modal_smolvla_monolithic_export.py --parity --num-steps 10` | +1.000000 | 5.96e-07 |
+| pi0 num_steps=10 | `modal run scripts/modal_pi0_monolithic_export.py --parity --num-steps 10` | +1.000000 | 2.09e-07 |
+| pi0.5 num_steps=10 | `modal run scripts/modal_pi05_monolithic_export.py --parity --num-steps 10` | +1.000000 | 2.38e-07 |
+| GR00T N1.6 (per-step) | `modal run scripts/modal_gr00t_monolithic_export.py --parity` | +1.000000 | 8.34e-07 |
+| GR00T N1.6 (4-step loop) | `modal run scripts/modal_gr00t_monolithic_export.py --loop` | +1.000000 | 4.77e-07 |
 
-**Runtime mechanics (IMPORTANT — correcting an earlier mistake):** The num_steps=1 monolithic ONNX is NOT a "single denoise step you can host-loop." It's a full `sample_actions(num_steps=1)` call — computes prefix + runs 1 big Euler step with dt=-1.0 + returns x_final. Calling it N times from Python gives N identical outputs (deterministic). To actually achieve num_steps=10 semantics, you need either:
+### Per-model deltas from this base pattern
 
-1. **Re-export at num_steps=10 directly** (blocked on the 835→886 bug above).
-2. **Per-step ONNX** (denoise_step as standalone, takes x_t + timestep + past_kv as inputs). Past_kv-as-ONNX-input fails torch.export's DynamicCache tracer (see `03_research/pi0_onnx_importable_sources.md` critical risks #7-9).
-3. **Multiple monolithic exports at varying num_steps** (each ~7 min on Modal, each bakes a fixed num_steps). Viable for a small N set (1, 5, 10, 20).
+**SmolVLA.** Same monolithic wrap pattern, `SmolVLAPolicy.model.sample_actions(num_steps=10)`. SmolLM2 backbone doesn't need the 3-patch stack; just the SmolVLM2 `torch.where` dtype fix + post-export Cast insertion. Simpler than pi0.
 
-**Current customer-facing ship: num_steps=1.** Lower quality than pi0's default but numerically verified. For v0.3 we'll land at least one of the three upgrade paths above.
+**pi0.** Full 3-patch stack (F.pad mask + frozen DynamicLayer.update + past_kv.get_seq_length). Wrapper signature: `(images, img_masks, lang_tokens, lang_masks, state, noise)` — 6 inputs.
+
+**pi0.5.** Same 3-patch stack ported verbatim. **Wrapper signature drops the `state` arg** — pi0.5 tokenizes state into language tokens upstream, so `PI05Pytorch.denoise_step` is `(prefix_pad_masks, past_key_values, x_t, timestep)` — 4 args vs pi0's 5. Wrapper `forward(images, img_masks, lang_tokens, lang_masks, noise)` — 5 inputs.
+
+**GR00T N1.6.** **Does not use this monolithic wrap pattern at all.** GR00T is DDPM DiT (not flow-matching decoder-only), no DynamicCache, no prefix-pad mask → plain `torch.onnx.export(opset=19)` on `GR00TFullStack` traces cleanly. See `01_architecture/gr00t_ddpm_dit_vs_flow_matching.md` for why.
+
+### Three-patch stack (required for pi0 + pi0.5)
+
+Summary — full detail in the dedicated bug report:
+
+1. **F.pad instead of torch.cat** for block-causal mask assembly (cat loses suffix dim under FakeTensor)
+2. **Freeze `DynamicLayer.update` during denoise phase** (prevents 784→835→886 cache growth across iterations)
+3. **Use `past_kv.get_seq_length()`** not `prefix_pad_masks.shape[1]` (the two diverge under tracing)
+
+The patches only work together. Removing any one drops cos back to 0.977 or breaks the export.
+
+## Historical context (pre-2026-04-19) — how we got here
+
+The original v0.2 pi0 num_steps=10 export used a `create_causal_mask → None` shim to dodge the 835→886 shape-expand bug. This let the export complete but silently skipped PaliGemma's prefix-pad masking, costing ~2% cos per step. Shipped as a v0.2 approximation with an honest disclaimer. SmolVLA was unaffected (SmolLM2's attention path doesn't use that mask for correctness).
+
+The three alternative paths considered in the original version of this doc turned out to have a better fourth option: keep the monolithic wrap, but patch around the three interacting trace bugs. That's what `bac658a` landed.
 
 ## Follow-up goals (tracked)
 
-- **pi0-onnx-parity-multistep** — land num_steps=10 (or dynamic N) parity. Either fix the 835→886 expand bug OR export per-step + solve DynamicCache tracer issue OR bake multiple fixed-N artifacts.
-- **Distribution** — publish the 12.5GB ONNX to HF Hub once customers exist (not before — versioned artifact with a customer is better than one without).
+- ~~**pi0-onnx-parity-multistep**~~ — ✅ SOLVED 2026-04-19 via three-patch stack
+- **GR00T VLM conditioning (Eagle VLM backbone export)** — currently zero-stubbed, full multimodal control v0.3
+- **Distribution** — publish ONNX artifacts to HF Hub once customer demand materializes
 
 ## Related
 
-- `reflex_context/03_research/pi0_onnx_importable_sources.md` — Tier-1 source analysis (Thor, Tacoin, GR00T)
-- `reflex_context/03_research/pi0_empirical_derisk_findings.md` — the Apr-17 component-level Optimum exports
-- `src/reflex/exporters/pi0_prefix_exporter.py` — 5-file decomposition (still valuable for debug)
-- `scripts/export_pi0_monolithic.py` — the Path C export script (this pattern)
+- `02_bugs_fixed/pi0_num_steps_10_three_patch_stack.md` — the patches, each explained with root cause and diagnostic
+- `01_architecture/gr00t_ddpm_dit_vs_flow_matching.md` — why GR00T doesn't need this pattern at all
+- `05_sessions/2026-04-19_all_four_vlas.md` — session narrative of landing all four VLAs
+- `03_research/pi0_onnx_importable_sources.md` — Tier-1 source analysis (Thor, Tacoin, GR00T) — historical
+- `scripts/modal_pi0_monolithic_export.py` — the shipped pi0 exporter with patches
+- `scripts/modal_pi05_monolithic_export.py` — the shipped pi0.5 exporter (same stack, 4-arg signature)
+- `scripts/modal_gr00t_monolithic_export.py` — the shipped GR00T exporter (plain torch.onnx.export)

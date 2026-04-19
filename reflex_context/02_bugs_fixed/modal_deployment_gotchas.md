@@ -409,3 +409,113 @@ Key points:
 - `scripts/modal_libero10.py` — LIBERO image with apt-heavy deps
 - `src/reflex/runtime/server.py` — strict providers + TRT batch bypass
 - `src/reflex/cli.py` — `--strict-providers`, `--no-strict-providers`, `reflex doctor`
+
+---
+
+## Gotcha (2026-04-19): HF_TOKEN secret name ambiguity across scripts
+
+**Symptom.** Ran `modal run scripts/modal_gr00t_monolithic_export.py` after four minutes of image build completed. Function start immediately errored: `Secret 'hf-token' not found in environment 'main'`. The pi0 and pi05 scripts use `modal.Secret.from_name("hf-token")` and work fine; GR00T, copied from the pi0 template, doesn't.
+
+**Root cause.** My Modal account has a secret named `huggingface` (the default name when you create via the HF + Modal integration UI) — not `hf-token`. The pi0/pi05 scripts were written against a different account convention. `modal secret list` shows both names are legitimate patterns across Modal accounts; there's no canonical.
+
+**Initial fallback attempt that didn't work.** Tried a try/except over `modal.Secret.from_name("hf-token")` falling through to `"huggingface"`. This fails because `from_name` is **lazy** — it returns a reference object without resolving, and the actual lookup happens when the Modal function starts. `from_name` never raises at call-time, so the try/except never trips.
+
+**Fix.** Use the account-specific name directly. For this repo's GR00T script: hardcoded `"huggingface"`. For pi0/pi05 (pre-existing): kept `"hf-token"` since those ran fine for their original author. Longer-term: add `HF_TOKEN` to local env and let the `_hf_secret()` helper prefer `modal.Secret.from_dict({"HF_TOKEN": token})` — the local-env path is portable across accounts.
+
+**Lesson.** When templating Modal scripts from another script on a different account, `from_name(...)` arguments are a silent trap. Either grep-replace the secret name, or prefer local-env fallbacks wired via `from_dict`.
+
+---
+
+## Gotcha (2026-04-19): Modal image build transient terminations
+
+**Symptom.** `modal run scripts/modal_gr00t_monolithic_export.py` mid-way through pip install: `RemoteError('Image build for im-0vJfS37Mx4dtpQtNaRVco3 terminated due to external shut-down. Please try again.')`. Happens during torch/onnxruntime wheel downloads.
+
+**Root cause.** Modal-side image build infrastructure is shared; occasional builder preemption drops in-flight builds. Not retryable automatically.
+
+**Fix.** Re-run the command. Second attempt succeeded. No code change warranted given how rare this is (~1 in 10 first-builds of fresh images).
+
+**Lesson.** Don't auto-retry via wrapping logic. The failure is transparent and a human re-run is cheaper than error-recovery complexity. Just note it in docs.
+
+---
+
+## Gotcha (2026-04-19): Docker ENTRYPOINT intercepting subprocess exec
+
+**Symptom.** The CI docker-smoke test wanted to run `docker run reflex-vla python -c "import reflex"` to verify the package imports inside the published image. Instead of importing reflex, the container ran `reflex python -c "import reflex"` — i.e. treated `python` as an arg to `reflex` subcommand, then `reflex` errored "Unknown command: python".
+
+**Root cause.** The `Dockerfile` has `ENTRYPOINT ["reflex"]` so that `docker run image <subcommand>` maps cleanly to `reflex <subcommand>`. This is the right ergonomics for end users but breaks subprocess-level smoke tests that need raw `python`.
+
+**Fix options considered:**
+1. `docker run --entrypoint python image -c "..."` — works but brittle; different test frameworks override differently
+2. GitHub Actions workflow that invokes `docker build + docker run` natively in CI, bypassing the subprocess abstraction — **chosen**
+3. Switch to `CMD` instead of `ENTRYPOINT` — worse ergonomics for end users who get the zero-install `docker run image serve ./export` story
+
+**Implementation.** `.github/workflows/docker-smoke.yml` runs the build + a few `reflex <subcmd>` smoke tests in CI directly. The Modal-based `scripts/modal_docker_smoke.py` was dropped — could never escape the ENTRYPOINT intercept.
+
+**Lesson.** If a Docker image has an ENTRYPOINT, don't try to test it via local subprocess exec; either `--entrypoint` override or use CI-native docker tooling.
+
+---
+
+## Gotcha (2026-04-19): Modal Volume sync lag on first parity after export
+
+**Symptom.** After `modal run ...monolithic_export.py`, immediately running `modal run ...monolithic_export.py --parity` occasionally sees the ONNX external-data file truncated or missing. Second run of parity succeeds.
+
+**Root cause.** `modal.Volume.commit()` completes and the Python function returns, but the filesystem-level sync to Modal's shared volume backend has a small lag (~10–30s). The next container that mounts the volume may see stale or partial state.
+
+**Fix (pi0/pi05 scripts).** Sleep 60s before reading the freshly-exported ONNX in the parity function if it's invoked right after export. In practice we usually invoke parity as a separate `modal run`, which gives the volume time to sync naturally — only hit this when hotlooping export + parity in the same `local_entrypoint`.
+
+**Lesson.** If you're testing exports by re-reading the volume right after a write, add a small sleep or check for file existence + correct size before running the parity logic. Modal Volumes are eventually-consistent, not strongly consistent.
+
+---
+
+## Gotcha (2026-04-19): ROS2 image construction — five attempts, one that works
+
+**Context.** Launch gate #5 required a live `rclpy` test: real ROS2 humble + real rclpy (not mocked) verifying `reflex ros2-serve` can subscribe/publish on Modal.
+
+**Attempts and failures:**
+
+1. **`modal.Image.debian_slim().pip_install("rclpy")`** — `rclpy` is NOT on PyPI. Fails at pip install.
+2. **`add_python="3.10"` on a ROS2 base image** — broke rclpy because Python path lookup uses setup.sh which goes missing when Modal injects its own Python.
+3. **Without `add_python`, bare ROS2 base image** — pip 22 on older base image can't handle `--break-system-packages`, needed for installing reflex alongside ROS's system-packaged Python libs.
+4. **Upgraded pip via pip install --upgrade pip** — distutils-installed ROS packages couldn't be replaced/upgraded; pip errored on dependency resolution.
+5. **Added `--ignore-installed`** — numpy ABI mismatch (rclpy compiled against numpy 1.21 at ROS build time, but reflex-vla pulled numpy 2.4 via transformers).
+
+**The working recipe (v5):** `ubuntu:22.04` + apt-install `ros-humble-ros-base` + `DEBIAN_FRONTEND=noninteractive` (for tzdata prompt) + pip constraint `numpy>=1.24,<2.0` + source `/opt/ros/humble/setup.bash` before invoking reflex.
+
+```python
+image = (
+    modal.Image.from_registry("ubuntu:22.04")
+    .env({"DEBIAN_FRONTEND": "noninteractive"})
+    .apt_install(
+        "curl", "gnupg", "lsb-release",
+        "ros-humble-ros-base",  # requires the ROS2 apt source to be added first
+        "python3-pip", "git",
+    )
+    .pip_install("reflex-vla[serve,onnx]", "numpy>=1.24,<2.0")
+)
+```
+
+**Lesson.** For anything that mixes apt-installed Python packages (like ROS) with pip packages, pin numpy to match the apt ABI. Don't try to upgrade apt-managed packages through pip.
+
+**File.** `tests/test_ros2_bridge_live.py` — the landed test. Reads as "boots up ROS2 humble in a Modal ubuntu:22.04 container, publishes an Image to `/camera/image_raw`, expects action chunks on `/reflex/actions` within 10s."
+
+---
+
+## Gotcha (2026-04-19): Module stubbing for cross-model compat
+
+**Symptom.** pi0/pi05 scripts import `lerobot.policies.pi0.modeling_pi0`; lerobot 0.5.1 also has `lerobot.policies.groot.groot_n1` and `lerobot.policies.groot.modeling_groot`. On Python 3.13 (used in some Modal images) the groot module has import-time compat breaks → ImportError → cascade failures before we ever touch GR00T code.
+
+**Fix.** At the top of each pi0/pi05 Modal script:
+
+```python
+for _mod in ("lerobot.policies.groot.groot_n1",
+             "lerobot.policies.groot.modeling_groot"):
+    stub = types.ModuleType(_mod)
+    stub.GrootPolicy = None
+    stub.GR00TN15 = None
+    sys.modules[_mod] = stub
+```
+
+This preemptively registers empty modules under those names so subsequent `from lerobot.policies.groot...` imports inside transitive dependencies succeed (returning None for the class, which they don't dereference during pi0 code paths).
+
+**Lesson.** If you're tracing a complex package where one submodule has transitive import breaks you don't care about, stub it in `sys.modules` before importing the rest. Don't try to fix the broken submodule unless you actually need it.
+
