@@ -212,8 +212,18 @@ def _apply_patches():
     volumes={HF_CACHE_PATH: hf_cache, ONNX_OUTPUT_PATH: onnx_output},
     secrets=[_hf_secret()],
 )
-def export_smolvla_monolithic_modal(num_steps: int = 1):
-    """Export SmolVLA as monolithic ONNX via onnx-diagnostic path."""
+def export_smolvla_monolithic_modal(
+    num_steps: int = 1,
+    model_id: str = "lerobot/smolvla_base",
+    out_subdir: str = "smolvla_monolithic",
+):
+    """Export SmolVLA as monolithic ONNX via onnx-diagnostic path.
+
+    `model_id` defaults to the base model but accepts fine-tunes like
+    `HuggingFaceVLA/smolvla_libero` for task-success harnesses. The
+    output goes to `/onnx_out/{out_subdir}/model.onnx` so multiple
+    fine-tunes can coexist on the same Modal volume.
+    """
     import time
     from pathlib import Path
     import torch
@@ -221,10 +231,10 @@ def export_smolvla_monolithic_modal(num_steps: int = 1):
 
     _apply_patches()
 
-    print("[smolvla] Loading SmolVLAPolicy...")
+    print(f"[smolvla] Loading SmolVLAPolicy ({model_id})...")
     t0 = time.time()
     from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
-    policy = SmolVLAPolicy.from_pretrained("lerobot/smolvla_base")
+    policy = SmolVLAPolicy.from_pretrained(model_id)
     policy.eval().to("cpu").to(torch.float32)
     policy.model.config.num_steps = num_steps
 
@@ -281,7 +291,7 @@ def export_smolvla_monolithic_modal(num_steps: int = 1):
         noise=torch.randn(B, chunk, action_dim, dtype=torch.float32),
     )
 
-    output_dir = Path(ONNX_OUTPUT_PATH) / "smolvla_monolithic"
+    output_dir = Path(ONNX_OUTPUT_PATH) / out_subdir
     output_dir.mkdir(parents=True, exist_ok=True)
     onnx_path = output_dir / "model.onnx"
 
@@ -638,7 +648,22 @@ def parity_cuda_smolvla():
 
 
 @app.local_entrypoint()
-def main(num_steps: int = 1, parity: bool = False, quality: bool = False, cuda: bool = False):
+def main(
+    num_steps: int = 1,
+    parity: bool = False,
+    quality: bool = False,
+    cuda: bool = False,
+    model_id: str = "lerobot/smolvla_base",
+    out_subdir: str = "smolvla_monolithic",
+):
+    """Export or parity-test SmolVLA monolithic ONNX.
+
+    --model-id: which HF model to export (default lerobot/smolvla_base).
+                For LIBERO task-success, use HuggingFaceVLA/smolvla_libero.
+    --out-subdir: subfolder on the modal volume (default smolvla_monolithic).
+                  Use e.g. smolvla_libero_monolithic when exporting a
+                  fine-tune so artifacts don't clobber each other.
+    """
     if cuda:
         result = parity_cuda_smolvla.remote()
     elif quality:
@@ -646,7 +671,11 @@ def main(num_steps: int = 1, parity: bool = False, quality: bool = False, cuda: 
     elif parity:
         result = parity_test_smolvla.remote(num_steps=num_steps)
     else:
-        result = export_smolvla_monolithic_modal.remote(num_steps=num_steps)
+        result = export_smolvla_monolithic_modal.remote(
+            num_steps=num_steps,
+            model_id=model_id,
+            out_subdir=out_subdir,
+        )
     print("\n=== RESULT ===")
     for k, v in result.items():
         print(f"  {k}: {v}")
