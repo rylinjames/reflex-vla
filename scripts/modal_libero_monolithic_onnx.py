@@ -313,6 +313,22 @@ def run_libero_onnx(
         state = policy.prepare_state(batch_pp)
         lang_tokens = batch_pp[OBS_LANGUAGE_TOKENS]
         lang_masks = batch_pp[OBS_LANGUAGE_ATTENTION_MASK]
+        # ONNX was exported with lang_seq=16 FIXED. LIBERO prompts tokenize
+        # to 13 or similar; right-pad to 16 with zeros + false mask.
+        target_seq = 16
+        cur_seq = lang_tokens.shape[1]
+        if cur_seq < target_seq:
+            pad_len = target_seq - cur_seq
+            B = lang_tokens.shape[0]
+            tok_pad = torch.zeros(B, pad_len, dtype=lang_tokens.dtype,
+                                  device=lang_tokens.device)
+            mask_pad = torch.zeros(B, pad_len, dtype=lang_masks.dtype,
+                                   device=lang_masks.device)
+            lang_tokens = torch.cat([lang_tokens, tok_pad], dim=1)
+            lang_masks = torch.cat([lang_masks, mask_pad], dim=1)
+        elif cur_seq > target_seq:
+            lang_tokens = lang_tokens[:, :target_seq]
+            lang_masks = lang_masks[:, :target_seq]
 
         # Generate noise the same way SmolVLA.sample_actions does when None.
         B = state.shape[0]
