@@ -110,11 +110,104 @@ class ReflexServer:
         self._batches_run = 0
         self._batched_requests = 0
 
+        # Rolling latency history for p50/p95/p99 reporting (goal:
+        # latency-histograms). Capped at 1024 samples — a ring buffer in
+        # all but name.
+        from collections import deque
+        self._latency_history: deque[float] = deque(maxlen=1024)
+
+        # Reproducibility hashes (goal: determinism-version-hash) — pulled
+        # from the exported config + computed lazily at first /act call.
+        self._model_hash: str | None = None
+        self._config_hash: str | None = None
+
     def _load_config(self) -> dict[str, Any]:
         config_path = self.export_dir / "reflex_config.json"
         if config_path.exists():
             return json.loads(config_path.read_text())
         return {}
+
+    def _latency_percentiles(self) -> dict[str, float]:
+        """Return p50/p95/p99 + jitter_ms over the rolling latency window.
+
+        Jitter = p99 - p50 (simple proxy for tail-vs-median variance;
+        matches the common robotics-control definition where jitter is
+        the spread between typical and worst-case cycle time).
+        """
+        if not self._latency_history:
+            return {
+                "latency_p50_ms": 0.0,
+                "latency_p95_ms": 0.0,
+                "latency_p99_ms": 0.0,
+                "jitter_ms": 0.0,
+            }
+        sorted_samples = sorted(self._latency_history)
+        n = len(sorted_samples)
+
+        def _pct(p: float) -> float:
+            # Nearest-rank method; fine for small windows.
+            idx = min(n - 1, int(round(p * (n - 1))))
+            return sorted_samples[idx]
+
+        p50 = _pct(0.50)
+        p95 = _pct(0.95)
+        p99 = _pct(0.99)
+        return {
+            "latency_p50_ms": round(p50, 2),
+            "latency_p95_ms": round(p95, 2),
+            "latency_p99_ms": round(p99, 2),
+            "jitter_ms": round(p99 - p50, 2),
+        }
+
+    def _determinism_fields(self) -> dict[str, str]:
+        """Return model_hash, config_hash, reflex_version for reproducibility.
+
+        Lazy: computed on first call, cached on self. Hashes are SHA256
+        truncated to 16 chars — short enough for logs, unique enough to
+        pin a deployment.
+        """
+        import hashlib
+
+        if self._model_hash is None:
+            # Hash all onnx files in the export dir (deterministic order).
+            h = hashlib.sha256()
+            for p in sorted(self.export_dir.glob("*.onnx")):
+                try:
+                    h.update(p.name.encode())
+                    with p.open("rb") as f:
+                        for chunk in iter(lambda: f.read(1 << 20), b""):
+                            h.update(chunk)
+                except Exception:
+                    pass
+            # External data files (.bin, .data) too — they hold the weights.
+            for p in sorted(self.export_dir.glob("*.bin")):
+                try:
+                    h.update(p.name.encode())
+                    with p.open("rb") as f:
+                        for chunk in iter(lambda: f.read(1 << 20), b""):
+                            h.update(chunk)
+                except Exception:
+                    pass
+            self._model_hash = h.hexdigest()[:16]
+
+        if self._config_hash is None:
+            import json as _json
+            try:
+                cfg_str = _json.dumps(self.config, sort_keys=True, default=str)
+            except Exception:
+                cfg_str = str(self.config)
+            self._config_hash = hashlib.sha256(cfg_str.encode()).hexdigest()[:16]
+
+        try:
+            from reflex import __version__ as _rver
+        except Exception:
+            _rver = "unknown"
+
+        return {
+            "model_hash": self._model_hash,
+            "config_hash": self._config_hash,
+            "reflex_version": _rver,
+        }
 
     def load(self) -> None:
         """Load the model from exported directory + compose any wedges."""
@@ -572,6 +665,9 @@ class ReflexServer:
         # Convert to list for JSON
         actions = actions_np.tolist()
 
+        # Record in rolling window for p50/p95/p99 reporting.
+        self._latency_history.append(elapsed_ms)
+
         result: dict[str, Any] = {
             "actions": actions,
             "num_actions": len(actions),
@@ -582,6 +678,11 @@ class ReflexServer:
             "inference_mode": self._inference_mode,
             "vlm_conditioning": "real" if used_vlm else "dummy",
         }
+        # Latency histograms over the rolling window (goal: latency-histograms).
+        result.update(self._latency_percentiles())
+        # Reproducibility: every response includes deployment fingerprint
+        # (goal: determinism-version-hash).
+        result.update(self._determinism_fields())
         # Telemetry from wedges — only populate when flags are on
         if self._adaptive_steps:
             result["adaptive_enabled"] = True
