@@ -134,7 +134,7 @@ The response JSON surfaces telemetry from each enabled wedge so you can see what
 | SmolVLA | `lerobot/smolvla_base` | 450M | ONNX + validated (max_diff=3.3e-06) |
 | pi0 | `lerobot/pi0_base` | 3.5B | ONNX + validated (max_diff=6.0e-08) |
 | pi0.5 | `lerobot/pi05_base` | 3.62B | ONNX + validated (max_diff=2.38e-07) |
-| GR00T N1.6 | `nvidia/GR00T-N1.6-3B` | 3.29B | ONNX + validated (max_diff=8.34e-07) |
+| GR00T N1.6 | `nvidia/GR00T-N1.6-3B` | 3.29B | ONNX + validated (max_diff=8.34e-07, **live VLM conditioning**) |
 | OpenVLA | `openvla/openvla-7b` | 7.5B | `optimum-cli export onnx` + `reflex.postprocess.openvla.decode_actions` |
 
 `reflex models` lists current support at any time. OpenVLA is a vanilla Llama-2-7B VLM — there's no custom action expert to reconstruct, so we defer to the standard HuggingFace export path and ship only the bin-to-continuous postprocess helper.
@@ -170,7 +170,7 @@ Each wedge works standalone for scripting, and every wedge that belongs in the i
 
 ## What Reflex is and isn't
 
-**Is:** the deployment layer between a trained VLA and a real robot. Cross-framework export verified at cos=+1.0000000 on all four major open VLAs — SmolVLA + pi0 + pi0.5 (flow-matching, num_steps=10) + GR00T N1.6 (DDPM DiT, num_steps=4) — plus a composable runtime (serve + safety + turbo + split), edge-first design targeting Jetson + desktop NVIDIA GPUs.
+**Is:** the deployment layer between a trained VLA and a real robot. Cross-framework export verified at cos=+1.0000000 on all four major open VLAs — SmolVLA + pi0 + pi0.5 (flow-matching, num_steps=10) + GR00T N1.6 (DDPM DiT, num_steps=4, **with Eagle 2.5 VL backbone producing live image+language KV**) — plus a composable runtime (serve + safety + turbo + split), edge-first design targeting Jetson + desktop NVIDIA GPUs.
 
 **Isn't:** a training framework (PyTorch/JAX own that) or a cloud inference provider (vLLM/Baseten own that). Reflex's moat is the deployment toolchain: cross-framework ONNX with verified numerical parity, composable safety wedges, ROS2 + Docker + HTTP serving, and a deterministic export receipt (`VERIFICATION.md`) your QA team can audit.
 
@@ -185,6 +185,9 @@ Four ONNX artifacts in production, measured against PyTorch on shared seeded inp
 | **pi0.5 ONNX, num_steps=10** (production default) | `sample_actions(num_steps=10)` | **2.38e-07** | ✅ **machine precision** |
 | **GR00T N1.6 ONNX, single-step DiT** (DDPM, loop external) | `GR00TFullStack.forward` | **8.34e-07** | ✅ **machine precision** |
 | **GR00T N1.6 end-to-end 4-step denoise loop** | Python loop over PyTorch ref | **4.77e-07** | ✅ **machine precision** |
+| **GR00T N1.6 Eagle VLM ONNX** (SigLIP + Qwen3 + mlp1, 1.87B) | `EagleExportStack` PyTorch | **4.25e-04** | ✅ machine precision |
+| **GR00T N1.6 DiT with real VLM KV** (5-input `expert_stack_with_vlm.onnx`) | `GR00TFullStack(state, vlm_kv)` | **1.78e-05** | ✅ machine precision |
+| **GR00T N1.6 end-to-end two-ONNX chain** (Eagle → DiT) | same chain in PyTorch | **1.90e-05** | ✅ parity + image-driven sensitivity verified (max_abs=0.21 on actions when input image changes) |
 | SmolVLA ONNX, num_steps=1 | `sample_actions(num_steps=1)` | 1.55e-06 | ✅ machine precision |
 | pi0 ONNX, num_steps=1 | `sample_actions(num_steps=1)` | 1.43e-06 | ✅ machine precision |
 
