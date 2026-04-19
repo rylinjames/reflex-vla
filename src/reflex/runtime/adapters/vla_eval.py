@@ -244,6 +244,19 @@ def build_adapter_class():
             # the robot flails. Empty dict == no-op.
             self._norm_stats = load_normalizer_stats(export_dir)
 
+            # VLM conditioning state:
+            #  - native mode: real SmolVLAPolicy runs inside the server;
+            #    VLM is "real" (uses the lerobot VLM pipe internally).
+            #  - decomposed mode: ReflexServer's _vlm_loaded flag tracks
+            #    whether the 4-file ONNX VLM chain was loaded successfully.
+            # The prior "vlm=off" in native mode was a false signal — native
+            # always has VLM via lerobot's internals. Fixed 2026-04-19.
+            if getattr(self, "_native_mode", False):
+                vlm_state = "real (lerobot)"
+            elif getattr(self._server, "_vlm_loaded", False):
+                vlm_state = "on (decomposed)"
+            else:
+                vlm_state = "off (decomposed/stubbed)"
             logger.info(
                 "ReflexVlaEvalAdapter ready: export=%s device=%s out_dim=%d "
                 "camera=%s vlm=%s norm=%s",
@@ -251,7 +264,7 @@ def build_adapter_class():
                 device,
                 action_dim_out,
                 camera_key or "<first>",
-                "on" if getattr(self._server, "_vlm_loaded", False) else "off",
+                vlm_state,
                 "on" if self._norm_stats else "off",
             )
 

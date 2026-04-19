@@ -274,6 +274,35 @@ class SmolVLANativeServer:
             k: (v.to(self._device) if isinstance(v, torch.Tensor) else v)
             for k, v in batch_pp.items()
         }
+        # One-shot diagnostic — what did we feed the preprocessor vs what did
+        # we get back? If our batch keys don't match the preprocessor's
+        # expected feature schema, tensors silently pass through as dummy
+        # zeros and the model operates with no visual/state conditioning.
+        # This is the likely root cause of the 2026-04-19 LIBERO-10 0%
+        # result — we pass observation.images.camera{1,2,3} but lerobot's
+        # SmolVLA LIBERO preprocessor probably expects something else.
+        if not getattr(self, "_batch_logged", False):
+            self._batch_logged = True
+            batch_keys = sorted(batch.keys())
+            batch_pp_keys = sorted(batch_pp.keys())
+            logger.info(
+                "First predict batch keys (before preprocessor): %s", batch_keys
+            )
+            logger.info(
+                "First predict batch_pp keys (after preprocessor): %s", batch_pp_keys
+            )
+            # Look for image tensors and dump their norms — if norms are
+            # suspiciously uniform or zero, images were dropped.
+            for k, v in batch_pp.items():
+                if "image" in k.lower() and hasattr(v, "shape"):
+                    v_np = v.detach().cpu().numpy() if hasattr(v, "detach") else v
+                    logger.info(
+                        "  batch_pp[%s]: shape=%s  min=%.3f  max=%.3f  mean=%.3f",
+                        k, v.shape,
+                        float(v_np.min()) if v_np.size else -1,
+                        float(v_np.max()) if v_np.size else -1,
+                        float(v_np.mean()) if v_np.size else -1,
+                    )
 
         # 3) Run policy
         noise_t = None
