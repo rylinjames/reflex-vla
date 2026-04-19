@@ -102,7 +102,17 @@ Code changes in `src/reflex/exporters/gr00t_exporter.py` (commit `16d6d9c`):
 - `build_gr00t_full_stack` soft-loads state_encoder (back-compat: older checkpoints without state_enc keys fall back to action-only sequence)
 - DiT (`GR00TExpertStack`) already accepted `vlm_kv: Optional[Tensor]` — zero-stub path preserved as default
 
-**Pending Step 2 validation:** `scripts/modal_gr00t_state_encoder_sanity.py` — quick 3-test run that confirms (1) state_encoder loads from N1.6 state_dict, (2) forward accepts new signature, (3) changing state or vlm_kv produces different output (conditioning is LIVE, not dead code).
+**Step 2 validation — PASSED 2026-04-19** (`scripts/modal_gr00t_state_encoder_sanity.py`, Modal run `ap-558ZOlxr9XhpT7cZGppr5F`):
+
+| Test | Result |
+|---|---|
+| state_encoder loads from N1.6 | ✅ 128→1536, `has_state_encoder=True` |
+| Output shape | ✅ `(1, 50, 128)` |
+| State conditioning LIVE | ✅ max\|a-b\| = 1.14e-02 (ratio 0.06) |
+| VLM conditioning LIVE | ✅ max\|zero-rand\| = 5.81e-01 (ratio **2.85**) |
+| Back-compat (state=None) | ✅ works |
+
+VLM dominates (2.85× ratio) over state (0.06× ratio) — expected: vision + language drive decisions, state is secondary proprio. Both conditioning paths confirmed LIVE, not dead code. Ready for Step 3 parity test against lerobot reference.
 
 ### 🟡 Step 3 — local parity vs lerobot reference (~2 hours)
 `scripts/modal_gr00t_parity.py`:
