@@ -366,8 +366,14 @@ def run_ported_libero(
                         })
                         break
 
+                # Cast to Python primitives so the result dict deserializes
+                # cleanly on any local Python (numpy.bool_ pickles with numpy
+                # globals → Modal client needs numpy to unpack, avoidable).
                 task_result["episodes"].append({
-                    "ep": ep, "init_idx": init_idx, "steps": t, "success": done,
+                    "ep": int(ep),
+                    "init_idx": int(init_idx),
+                    "steps": int(t),
+                    "success": bool(done),
                 })
                 task_result["total"] += 1
                 results["total_eps"] += 1
