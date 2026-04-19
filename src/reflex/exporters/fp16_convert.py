@@ -133,9 +133,16 @@ def convert_fp32_to_fp16(
 
     blocklist = list(op_block_list if op_block_list is not None else FP16_OP_BLOCKLIST)
 
+    # Shape inference runs internally inside convert_float_to_float16 by
+    # default. It serializes the whole proto (including loaded external
+    # data), which hits the 2GB protobuf limit on models >2GB. Disable
+    # when the loaded proto would exceed the limit — we already trust the
+    # upstream exporter's shape inference.
+    disable_shape_infer = model_fp32.ByteSize() > 1_800_000_000
+
     logger.info(
-        "[fp16] Converting (keep_io=%s, blocklist=%s)...",
-        keep_io_types, blocklist,
+        "[fp16] Converting (keep_io=%s, blocklist=%s, disable_shape_infer=%s)...",
+        keep_io_types, blocklist, disable_shape_infer,
     )
     model_fp16 = convert_float_to_float16(
         model_fp32,
@@ -143,6 +150,7 @@ def convert_fp32_to_fp16(
         op_block_list=blocklist,
         min_positive_val=min_positive_val,
         max_finite_val=max_finite_val,
+        disable_shape_infer=disable_shape_infer,
     )
 
     logger.info("[fp16] Saving %s...", dst)

@@ -26,13 +26,14 @@ app = modal.App("pi0-monolithic-export")
 def _hf_secret():
     """Return a Modal Secret carrying HF_TOKEN.
 
-    Order: local `HF_TOKEN` env var (dev convenience) → Modal named secret
-    `hf-token` (production). Never hardcode the token in source.
+    Order: local `HF_TOKEN` env var (dev convenience) → empty secret
+    fallback (works for public models on any workspace without a
+    pre-registered `hf-token`). Never hardcode the token in source.
     """
     token = os.environ.get("HF_TOKEN", "")
     if token:
         return modal.Secret.from_dict({"HF_TOKEN": token})
-    return modal.Secret.from_name("hf-token")
+    return modal.Secret.from_dict({})
 
 # Persistent volume for HF cache (pi0_base is ~14GB)
 hf_cache = modal.Volume.from_name("pi0-hf-cache", create_if_missing=True)
