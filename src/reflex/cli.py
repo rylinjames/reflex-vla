@@ -821,6 +821,14 @@ def serve(
              "request before flushing the batch. Lower = lower per-request "
              "latency; higher = better batching efficiency under bursty load.",
     ),
+    api_key: str = typer.Option(
+        "",
+        help="If set, every /act and /config request must include a matching "
+             "X-Reflex-Key header or it's rejected 401. /health stays "
+             "unauthenticated so load balancers can probe readiness. For "
+             "production use, pass via env var (e.g. --api-key $REFLEX_API_KEY) "
+             "rather than hardcoding.",
+    ),
     verbose: bool = typer.Option(False, help="Verbose logging"),
 ):
     """Start a VLA inference server. POST /act with image + instruction → actions.
@@ -926,7 +934,10 @@ def serve(
         deadline_ms=deadline_ms if deadline_ms > 0 else None,
         max_batch=max_batch,
         batch_timeout_ms=batch_timeout_ms,
+        api_key=api_key or None,
     )
+    if api_key:
+        composed.append("[cyan]api-key-auth[/cyan]")
     console.print("[bold green]Starting server...[/bold green]")
     uvicorn.run(app_instance, host=host, port=port, log_level="info" if verbose else "warning")
 

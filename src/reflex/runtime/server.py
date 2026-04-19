@@ -846,11 +846,18 @@ def create_app(
     deadline_ms: float | None = None,
     max_batch: int = 1,
     batch_timeout_ms: float = 5.0,
+    api_key: str | None = None,
 ) -> Any:
-    """Create a FastAPI app for serving VLA predictions."""
+    """Create a FastAPI app for serving VLA predictions.
+
+    api_key: if provided, every /act and /config request must include a
+    matching ``X-Reflex-Key`` header or it's rejected with HTTP 401. None
+    means no auth (default). /health is always unauthenticated so load
+    balancers can probe readiness without a key.
+    """
     try:
         from contextlib import asynccontextmanager
-        from fastapi import FastAPI
+        from fastapi import Depends, FastAPI, Header, HTTPException
         from fastapi.responses import JSONResponse
     except ImportError:
         raise ImportError("Install fastapi: pip install 'reflex-vla[serve]'")
@@ -965,6 +972,22 @@ def create_app(
         lifespan=lifespan,
     )
 
+    # X-Reflex-Key authentication dependency.
+    # If api_key is set at app-creation time, every route that uses this
+    # dependency requires the caller to pass a matching `X-Reflex-Key`
+    # header. Missing or wrong → 401. /health skips it so load balancers
+    # and orchestrators can probe readiness without credentials.
+    async def _require_api_key(
+        x_reflex_key: str | None = Header(default=None, alias="X-Reflex-Key"),
+    ) -> None:
+        if api_key is None:
+            return
+        if not x_reflex_key or x_reflex_key != api_key:
+            raise HTTPException(
+                status_code=401,
+                detail="missing or invalid X-Reflex-Key header",
+            )
+
     @app.get("/health", response_model=HealthResponse)
     async def health():
         return HealthResponse(
@@ -976,8 +999,7 @@ def create_app(
         )
 
     @app.post("/act")
-    async def act(request: PredictRequest):
-        # Routes through the batching path when max_batch > 1.
+    async def act(request: PredictRequest, _auth: None = Depends(_require_api_key)):
         result = await server.predict_from_base64_async(
             image_b64=request.image,
             instruction=request.instruction,
@@ -986,7 +1008,7 @@ def create_app(
         return JSONResponse(content=result)
 
     @app.get("/config")
-    async def config():
+    async def config(_auth: None = Depends(_require_api_key)):
         return JSONResponse(content=server.config)
 
     @app.get("/guard/status")
