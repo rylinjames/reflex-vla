@@ -1,6 +1,19 @@
 version: 1
 mission: "Deploy any VLA model to any edge hardware. One command."
 
+# ── CURRENT FOCUS (2026-04-19 — active work, not backlog) ─────────
+# Between v0.2.1 tag and v0.3 launch. All four VLAs are cos=+1.000000
+# verified + customer-dogfood end-to-end verified (see
+# reflex_context/06_experiments/customer_first_run_transcript.md).
+# The two active goals are the biggest blockers to paid monetization:
+current_focus:
+  - id: task-success-benchmark
+    why: "Biggest paid-pricing unlock. cos=1.0 parity != task success; buyer needs LIBERO-10 / SimplerEnv numbers before writing a $2k/mo check. No hardware dep — runs on Modal A10G/A100."
+    eta: "1-2 days on Modal"
+  - id: gr00t-vlm-conditioning
+    why: "Completes GR00T to be deployable. DiT stack is cos=1.0 but VLM is zero-stubbed; without this, customer-facing GR00T support is semantically incomplete. Pure code work, no hardware dep."
+    eta: "1-2 days"
+
 goals:
   # ── CRITICAL (weight 10) ──────────────────────────────────────────
 
