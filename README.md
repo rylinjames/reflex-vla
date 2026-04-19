@@ -176,13 +176,13 @@ Four ONNX artifacts in production, measured against PyTorch on shared seeded inp
 | Artifact | Reference | first-action max_abs | verdict |
 |---|---|---|---|
 | **SmolVLA ONNX, num_steps=10** (production default) | `sample_actions(num_steps=10)` | **5.96e-07** | ✅ machine precision |
-| **pi0 ONNX, num_steps=10** (production default) | `sample_actions(num_steps=10)` | 1.31e-01 (cos=0.977) | ✅ approximation, documented |
+| **pi0 ONNX, num_steps=10** (production default) | `sample_actions(num_steps=10)` | **2.09e-07** | ✅ **machine precision** |
 | SmolVLA ONNX, num_steps=1 | `sample_actions(num_steps=1)` | 1.55e-06 | ✅ machine precision |
 | pi0 ONNX, num_steps=1 | `sample_actions(num_steps=1)` | 1.43e-06 | ✅ machine precision |
 
 Plus PyTorch-level native-path sanity checks (`SmolVLAPolicy` with DecomposedRMSNorm swap vs reference = cos=1.0; `PI0Policy.predict_action_chunk` vs raw `sample_actions` = bit-exact).
 
-**About the num_steps=10 artifacts**: flow-matching VLAs canonically integrate the learned velocity field with 10 Euler steps. Exporting that unrolled loop hit a transformers 5.3 shape-tracing bug (prefix-pad mask rebuild vs suffix-extended K — see `reflex_context/01_architecture/pi0_monolithic_wrap_pattern.md`). A `create_causal_mask → None` shim unblocks export for both models. **For SmolVLA (SmolLM2 backbone) the shim has no semantic impact — cos=1.0 at machine precision.** For pi0 (PaliGemma + Gemma backbone) the shim skips prefix-pad masking, costing ~2% action parity (cos=0.977). Restoring pi0's cos=1.0 at num_steps=10 requires a deeper Gemma inner-attention patch — tracked for v0.3.
+**About the num_steps=10 artifacts**: flow-matching VLAs canonically integrate the learned velocity field with 10 Euler steps. Both SmolVLA and pi0 export cleanly at num_steps=10 and match canonical PyTorch to machine precision. Getting pi0 there required three interacting patches (2026-04-19): (1) replace `torch.cat` of the block-causal mask with `F.pad + &` (cat loses the suffix dim under `torch.export` FakeTensor tracing); (2) freeze `DynamicLayer.update` during the Euler loop so the cache doesn't grow across unrolled iterations; (3) use the cache's `get_seq_length()` (not the pad-mask shape) for mask assembly. Details in `reflex_context/01_architecture/pi0_monolithic_wrap_pattern.md`.
 
 Full ledger: [reflex_context/measured_numbers.md](reflex_context/measured_numbers.md).
 

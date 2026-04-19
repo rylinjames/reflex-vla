@@ -273,6 +273,51 @@ def export_pi0_monolithic_modal(
 
     _mp0.PI0Pytorch.denoise_step = _patched_denoise_step
 
+    # === Freeze DynamicCache.update during denoise iterations ===
+    # Root cause of pi0 cos=0.977 (vs 1.0) at num_steps=10: under torch.export
+    # FakeTensor tracing, DynamicCache.update() APPENDS K/V regardless of
+    # use_cache=False because transformers' attention layer unconditionally
+    # calls `past_kv.update(k, v, layer_idx)` to get the concat of
+    # past + current. Each Euler iteration therefore mutates the shared
+    # cache → iter N's attention sees past of size (orig + N*suffix_len),
+    # diverging from eager PyTorch (where use_cache=False prevents mutation).
+    #
+    # Fix: install a wrapped update() that, when a denoise-phase flag is set,
+    # returns past+current CONCAT without appending to self.key_cache. Prefix
+    # forward runs WITHOUT the flag (builds the cache normally); the Euler
+    # loop runs WITH the flag (cache frozen). This matches canonical eager
+    # PyTorch semantics and produces cos=1.0.
+    from transformers.cache_utils import DynamicCache as _DC, DynamicLayer as _DL
+    _orig_layer_update = _DL.update
+    _denoise_phase = [False]
+
+    def _frozen_layer_update(self, key_states, value_states, cache_kwargs=None):
+        # Transformers 5.3: DynamicLayer stores K/V as self.keys / self.values.
+        # During denoise phase, return past_concat_current WITHOUT appending
+        # to self.keys/values — cache stays frozen at prefix size.
+        if _denoise_phase[0] and getattr(self, "is_initialized", False):
+            past_k = self.keys
+            past_v = self.values
+            if past_k is not None and past_v is not None:
+                new_k = torch.cat([past_k, key_states], dim=-2)
+                new_v = torch.cat([past_v, value_states], dim=-2)
+                return new_k, new_v
+        return _orig_layer_update(self, key_states, value_states, cache_kwargs)
+
+    _DL.update = _frozen_layer_update
+
+    # Wrap denoise_step to flip the flag during its execution.
+    _dstep_inner = _mp0.PI0Pytorch.denoise_step
+
+    def _denoise_step_with_flag(self, state, prefix_pad_masks, past_key_values, x_t, timestep):
+        _denoise_phase[0] = True
+        try:
+            return _dstep_inner(self, state, prefix_pad_masks, past_key_values, x_t, timestep)
+        finally:
+            _denoise_phase[0] = False
+
+    _mp0.PI0Pytorch.denoise_step = _denoise_step_with_flag
+
     # Patch denoise_step to skip copy.deepcopy(past_key_values) — the deepcopy
     # fails under torch.export FakeTensor tracing ("Cannot access data pointer").
     # Safe to skip: use_cache=False means the forward doesn't mutate the cache.

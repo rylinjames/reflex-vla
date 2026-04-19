@@ -221,6 +221,108 @@ def apply_export_patches() -> None:
     except ImportError:
         pass
 
+    # ===============================================================
+    # pi0 cos=1.0 at num_steps=10 — the full fix stack (2026-04-19)
+    # ===============================================================
+    # Three interacting issues, three surgical patches:
+    #
+    # 1. `torch.cat([prefix_pad_2d_masks, suffix_att_2d_masks], dim=2)` inside
+    #    denoise_step loses its suffix dim under FakeTensor tracing — the
+    #    cat'd output arrives at attention as [1,1,51,835] instead of the
+    #    intended [1,1,51,886]. Replace with F.pad + logical AND, which has
+    #    concrete output sizes at every step.
+    #
+    # 2. `DynamicLayer.update` (transformers 5.3) unconditionally APPENDS
+    #    new K/V to self.keys/self.values regardless of use_cache=False.
+    #    Under eager PyTorch this mutation is inert between iterations
+    #    (the cache object is re-passed but not re-used). Under
+    #    torch.export tracing the SAME object is seen across unrolled
+    #    iterations → cache grows (784 → 835 → 886 → ...), each iter's
+    #    attention sees a different K dim than the canonical eager path.
+    #    Fix: wrap DynamicLayer.update to return `cat(past, new)` WITHOUT
+    #    appending when a "denoise-phase" flag is set. Prefix forward runs
+    #    WITHOUT the flag (cache populates normally); Euler loop runs WITH
+    #    the flag (cache frozen at prefix size). Matches canonical semantics.
+    #
+    # 3. Use `past_key_values.get_seq_length()` (not `prefix_pad_masks.shape[1]`)
+    #    for mask construction — the two can diverge under tracing.
+    #
+    # Result: pi0 num_steps=10 monolithic ONNX matches canonical PyTorch
+    # sample_actions(num_steps=10) at cos=1.0, max_abs ~2e-07 (float32
+    # precision floor).
+    try:
+        import torch.nn.functional as _F
+        from transformers.cache_utils import DynamicLayer as _DL
+        from lerobot.policies.pi0 import modeling_pi0 as _mp0
+        from lerobot.policies.pi0.modeling_pi0 import make_att_2d_masks as _make_att_2d_masks
+
+        _denoise_phase = [False]
+        _orig_layer_update = _DL.update
+
+        def _frozen_layer_update(self, key_states, value_states, cache_kwargs=None):
+            if _denoise_phase[0] and getattr(self, "is_initialized", False):
+                past_k = self.keys
+                past_v = self.values
+                if past_k is not None and past_v is not None:
+                    new_k = torch.cat([past_k, key_states], dim=-2)
+                    new_v = torch.cat([past_v, value_states], dim=-2)
+                    return new_k, new_v
+            return _orig_layer_update(self, key_states, value_states, cache_kwargs)
+        _DL.update = _frozen_layer_update
+
+        def _patched_denoise_step(self, state, prefix_pad_masks, past_key_values, x_t, timestep):
+            suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(
+                state, x_t, timestep,
+            )
+            suffix_len = suffix_pad_masks.shape[1]
+            batch_size = prefix_pad_masks.shape[0]
+            cached_prefix_len = past_key_values.get_seq_length() if past_key_values is not None else 0
+            prefix_len = max(cached_prefix_len, prefix_pad_masks.shape[1])
+
+            pad_deficit = prefix_len - prefix_pad_masks.shape[1]
+            prefix_pad_masks_extended = prefix_pad_masks
+            if pad_deficit > 0:
+                prefix_pad_masks_extended = _F.pad(prefix_pad_masks, (0, pad_deficit), value=True)
+
+            prefix_pad_2d_masks = prefix_pad_masks_extended[:, None, :].expand(batch_size, suffix_len, prefix_len)
+            suffix_att_2d_masks = _make_att_2d_masks(suffix_pad_masks, suffix_att_masks)
+
+            prefix_allowed = _F.pad(prefix_pad_2d_masks, (0, suffix_len), value=True)
+            suffix_allowed = _F.pad(suffix_att_2d_masks, (prefix_len, 0), value=True)
+            full_att_2d_masks = prefix_allowed & suffix_allowed
+
+            prefix_offsets = torch.sum(prefix_pad_masks, dim=-1)[:, None]
+            position_ids = prefix_offsets + torch.cumsum(suffix_pad_masks, dim=1) - 1
+
+            full_att_2d_masks_4d = self._prepare_attention_masks_4d(full_att_2d_masks)
+            self.paligemma_with_expert.gemma_expert.model.config._attn_implementation = "eager"
+
+            outputs_embeds, _ = self.paligemma_with_expert.forward(
+                attention_mask=full_att_2d_masks_4d,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                inputs_embeds=[None, suffix_embs],
+                use_cache=False,
+                adarms_cond=[None, adarms_cond],
+            )
+            suffix_out = outputs_embeds[1]
+            suffix_out = suffix_out[:, -self.config.chunk_size:]
+            suffix_out = suffix_out.to(dtype=torch.float32)
+            return self.action_out_proj(suffix_out)
+
+        _dstep_inner = _patched_denoise_step
+
+        def _denoise_step_with_flag(self, state, prefix_pad_masks, past_key_values, x_t, timestep):
+            _denoise_phase[0] = True
+            try:
+                return _dstep_inner(self, state, prefix_pad_masks, past_key_values, x_t, timestep)
+            finally:
+                _denoise_phase[0] = False
+
+        _mp0.PI0Pytorch.denoise_step = _denoise_step_with_flag
+    except ImportError:
+        pass
+
 
 def _force_eager_attn(model: Any) -> None:
     """Force every module's `_attn_implementation` to 'eager' — onnx-diagnostic's
