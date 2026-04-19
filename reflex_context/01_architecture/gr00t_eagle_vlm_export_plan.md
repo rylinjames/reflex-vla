@@ -114,13 +114,28 @@ Code changes in `src/reflex/exporters/gr00t_exporter.py` (commit `16d6d9c`):
 
 VLM dominates (2.85× ratio) over state (0.06× ratio) — expected: vision + language drive decisions, state is secondary proprio. Both conditioning paths confirmed LIVE, not dead code. Ready for Step 3 parity test against lerobot reference.
 
-### 🟡 Step 3 — local parity vs lerobot reference (~2 hours)
-`scripts/modal_gr00t_parity.py`:
-1. Load `nvidia/GR00T-N1.6-3B` via both lerobot's `GR00TN15.from_pretrained` AND our `build_gr00t_full_stack`
-2. Run lerobot's full pipeline with (image + task + state + seeded noise) → actions_ref
-3. Extract vl_embs from lerobot's backbone forward
-4. Run our `GR00TFullStack(noisy, t, pos, state=state, vlm_kv=vl_embs)` → actions_ours
-5. Compare: cos + max_abs. Target `cos=+1.000000, max_abs<1e-4` like our bit-exact pi0.5 parity
+### ✅ Step 3 — parity test DONE 2026-04-19 (`cos=+1.000000, max_abs=0.0` bit-exact)
+
+`scripts/modal_gr00t_vlm_parity.py` — Modal run `ap-qZUywn100OUSIm49xZf6D5`.
+
+**Important pivot during Step 3:** originally planned to compare against lerobot's `GR00TN15.from_pretrained`, but lerobot 0.5.1 can't load N1.6 (config has `model_type="Gr00tN1d6"` but lerobot 0.5.1 only supports `gr00t_n1_5`; also missing `backbone_cfg` attr). Instead wrote a hand-rolled reference that uses the SAME primitive classes as our GR00TFullStack (action_encoder, state_encoder, dit, action_decoder) wired directly, so any delta from GR00TFullStack reveals a wrapper bug.
+
+**Bug caught during Step 3:** pos_embed was being added to the state_token (position 0). Lerobot's code adds pos_embed to action_features BEFORE concat with state; state has NO pos_embed. Fixed in this session:
+
+```python
+# FIXED: apply pos_embed to action_tokens BEFORE concat, skip DiT's internal add
+action_pos_ids = torch.arange(chunk)
+action_pos = self.dit.pos_embed[action_pos_ids].unsqueeze(0)
+action_tokens = action_tokens + action_pos
+tokens = torch.cat([state_token, action_tokens], dim=1)  # state has no pos_embed
+self.dit(tokens, ..., add_pos_embed=False)  # skip DiT's own pos_embed add
+```
+
+Also added `add_pos_embed: bool = True` kwarg to `GR00TExpertStack.forward` for this skip-path.
+
+Final parity: **cos=+1.000000, max_abs=0.0** on seeded synthetic inputs (noisy, timestep=0.5, state=randn, vlm_kv=randn). Identical byte-for-byte first_action values confirm the wrapper is semantically sound.
+
+**Caveat:** this parity is against a hand-rolled reference using our own primitive classes, NOT against the real lerobot/GR00T-N1.5 reference (blocked on lerobot version incompat). We trust the primitives because they were already verified cos=1.0 against PyTorch in prior session (see `monolithic_parity_table.md` GR00T rows). The real "does this produce task-relevant actions" test is Step 5 (end-to-end).
 
 ### Step 4 — Modal export (~3 hours)
 Extend `scripts/modal_gr00t_monolithic_export.py` with `export_gr00t_vlm_modal()`:
