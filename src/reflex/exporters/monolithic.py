@@ -647,7 +647,7 @@ def _write_reflex_config(
     model_type: str,
     target: str = "desktop",
 ) -> None:
-    """Write `reflex_config.json` so `reflex serve` knows what to load."""
+    """Write `reflex_config.json` + seed a VERIFICATION.md receipt."""
     cfg_dict = {
         "model_id": model_id,
         "model_type": model_type,
@@ -664,6 +664,17 @@ def _write_reflex_config(
     (output_dir / "reflex_config.json").write_text(
         json.dumps(cfg_dict, indent=2, default=str)
     )
+
+    # Seed VERIFICATION.md at export time — every export ships a receipt,
+    # even before `reflex validate` fills in the parity numbers. Callers
+    # that run validate afterward will overwrite with verified max_abs.
+    # Wrapped in try/except so a report-writing error can't fail the
+    # actual export (the ONNX is already on disk by this point).
+    try:
+        from reflex.verification_report import write_verification_report
+        write_verification_report(output_dir, parity=None)
+    except Exception:
+        pass
 
 
 def export_pi05_monolithic(
