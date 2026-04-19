@@ -168,6 +168,23 @@ def convert_fp32_to_fp16(
         size_threshold=1024,
     )
 
+    # Fix value_info type metadata. When disable_shape_infer=True is set for
+    # >2GB models, some internal nodes' output types stay labeled FP32 in
+    # the proto even though the tensors are now FP16 — ORT refuses to load
+    # the model. `infer_shapes_path` works on disk without loading proto
+    # into memory, so it's safe for big models.
+    if disable_shape_infer:
+        from onnx import shape_inference
+        logger.info("[fp16] Re-running shape inference on disk to fix value_info...")
+        try:
+            shape_inference.infer_shapes_path(str(dst), str(dst))
+            logger.info("[fp16] Shape inference complete.")
+        except Exception as e:
+            logger.warning(
+                "[fp16] infer_shapes_path failed: %s — model may fail ORT load",
+                e,
+            )
+
     # Size accounting
     fp32_bytes = _size_with_external(src)
     fp16_bytes = _size_with_external(dst)
