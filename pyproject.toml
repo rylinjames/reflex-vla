@@ -31,7 +31,12 @@ dependencies = [
     # loading for the auto-detect path. Apr-14 install-path verification caught
     # that omitting these breaks `reflex export` even with [serve,gpu].
     "huggingface_hub>=0.20.0",
-    "transformers>=4.40,<5.0",
+    # Base allows 4.40 → 5.3.x. [monolithic] extra pins ==5.3.0 exactly (5.4+ has
+    # a q_length regression that breaks onnx-diagnostic patches). Without the
+    # upper bound, pip would pull 5.4/5.5 here and conflict with [monolithic].
+    # Without raising the upper bound past 5.0, [monolithic] can't install
+    # alongside the base (the v0.2.1 customer-dogfood finding).
+    "transformers>=4.40,<5.4",
     "onnx>=1.15.0",
     "onnxscript>=0.1.0",
 ]
@@ -69,10 +74,10 @@ native = [
     "num2words",
 ]
 # Monolithic ONNX export — cos=1.0 verified production path. Runs locally
-# via `reflex export --monolithic`. Requires transformers==5.3.0 EXACTLY
-# (5.4+ has a q_length regression in masking_utils.sdpa_mask that breaks
-# onnx-diagnostic patches). Install in a clean venv to avoid conflict
-# with the base transformers>=4.40,<5.0 pin.
+# via `reflex export --monolithic` (the DEFAULT as of v0.2.1). Requires
+# transformers==5.3.0 EXACTLY (5.4+ has a q_length regression in
+# masking_utils.sdpa_mask that breaks onnx-diagnostic patches). Base pin
+# `transformers>=4.40,<5.4` permits this extra to pin-to-exact.
 monolithic = [
     "lerobot==0.5.1",
     "transformers==5.3.0",
