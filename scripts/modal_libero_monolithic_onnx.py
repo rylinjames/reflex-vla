@@ -223,6 +223,21 @@ def run_libero_onnx(
     input_names = [i.name for i in sess.get_inputs()]
     print(f"[onnx]   inputs: {input_names}")
 
+    # Detect the ONNX's expected lang_seq. Earlier exports hardcoded 16;
+    # if a future export uses dynamic or seq=48, honor it. Falls back to
+    # 16 if the shape is symbolic or missing (safer for task 0-3, will
+    # silently truncate task 4's 21-token prompt — see
+    # reflex_context/06_experiments/task34_gap_audit.md).
+    expected_lang_seq = 16
+    for i in sess.get_inputs():
+        if i.name == "lang_tokens":
+            shape = i.shape
+            # Dim 1 is the seq length; pick static int, else stay 16.
+            if len(shape) >= 2 and isinstance(shape[1], int):
+                expected_lang_seq = int(shape[1])
+            break
+    print(f"[onnx]   lang_seq (detected): {expected_lang_seq}")
+
     # ─── LIBERO setup ────────────────────────────────────────────────
     np.random.seed(seed)
     from libero.libero import benchmark
@@ -313,9 +328,10 @@ def run_libero_onnx(
         state = policy.prepare_state(batch_pp)
         lang_tokens = batch_pp[OBS_LANGUAGE_TOKENS]
         lang_masks = batch_pp[OBS_LANGUAGE_ATTENTION_MASK]
-        # ONNX was exported with lang_seq=16 FIXED. LIBERO prompts tokenize
-        # to 13 or similar; right-pad to 16 with zeros + false mask.
-        target_seq = 16
+        # Pad/trim to whatever the ONNX expects (detected at load time).
+        # Historically seq=16; re-exports with dynamic seq or seq=48 will
+        # work through the same path.
+        target_seq = expected_lang_seq
         cur_seq = lang_tokens.shape[1]
         if cur_seq < target_seq:
             pad_len = target_seq - cur_seq
