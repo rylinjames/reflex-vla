@@ -25,11 +25,12 @@ app = modal.App("smolvla-monolithic-export")
 
 
 def _hf_secret():
-    """HF_TOKEN via local env var (dev) or Modal named secret `hf-token` (prod)."""
+    """HF_TOKEN via local env var (dev); empty secret fallback for public
+    models (works on any workspace without a pre-registered 'hf-token')."""
     token = os.environ.get("HF_TOKEN", "")
     if token:
         return modal.Secret.from_dict({"HF_TOKEN": token})
-    return modal.Secret.from_name("hf-token")
+    return modal.Secret.from_dict({})
 
 # Reuse pi0's HF cache volume — same HF models may be pulled; saves storage
 hf_cache = modal.Volume.from_name("pi0-hf-cache", create_if_missing=True)
