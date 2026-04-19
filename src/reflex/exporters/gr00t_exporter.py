@@ -214,12 +214,20 @@ class GR00TExpertStack(nn.Module):
 
     def forward(self, action_tokens: torch.Tensor, timestep: torch.Tensor,
                 position_ids: torch.Tensor,
-                vlm_kv: torch.Tensor | None = None) -> torch.Tensor:
+                vlm_kv: torch.Tensor | None = None,
+                add_pos_embed: bool = True) -> torch.Tensor:
         b, s, _ = action_tokens.shape
 
-        # Add position embeddings
-        pos = self.pos_embed[position_ids]  # [b, s, hidden]
-        x = action_tokens + pos
+        # Add position embeddings when caller hasn't pre-added them.
+        # When state_token is prepended to action_tokens, the caller must
+        # add pos_embed to ONLY action_tokens before concat (matches
+        # lerobot's flow_matching_action_head.py). In that case this
+        # internal add is skipped via add_pos_embed=False.
+        if add_pos_embed:
+            pos = self.pos_embed[position_ids]  # [b, s, hidden]
+            x = action_tokens + pos
+        else:
+            x = action_tokens
 
         # Timestep embedding: sinusoidal → linear_1 → silu → linear_2
         t_sin = _sinusoidal_timestep(timestep, self.sinusoidal_dim)
@@ -655,19 +663,42 @@ class GR00TFullStack(nn.Module):
 
         # Encode action chunk → [b, chunk, 1536]
         action_tokens = self.action_encoder(noisy_actions, time_emb)
+        chunk = action_tokens.shape[1]
 
-        # Optional state token prefix. N1.6's DiT input is
-        # sa_embs = cat(state_token, action_tokens) — no future_tokens.
-        if self.state_encoder is not None and state is not None:
-            state_token = self.state_encoder(state)            # [b, 1, 1536]
+        # Add position embedding to ACTION tokens only (matches lerobot's
+        # flow_matching_action_head.py lines 380-383: pos_embed applied to
+        # action_features BEFORE concat with state). Without this, DiT's
+        # internal pos_embed would add pos_embed[0] to state_token and
+        # shift action positions by 1.
+        if state is not None and self.state_encoder is not None:
+            action_pos_ids = torch.arange(chunk, device=action_tokens.device)
+            action_pos = self.dit.pos_embed[action_pos_ids].unsqueeze(0)
+            action_tokens = action_tokens + action_pos
+
+            state_token = self.state_encoder(state)                  # [b, 1, 1536]
             tokens = torch.cat([state_token, action_tokens], dim=1)  # [b, chunk+1, 1536]
             action_start = 1
+            # Pass a position_ids tensor that — combined with the DiT's
+            # internal pos_embed[position_ids] add — yields zero addition.
+            # The DiT we ported adds pos_embed unconditionally; easiest
+            # path is to have it add zeros. We'll signal this with
+            # position_ids=None below and have the DiT skip pos_embed.
+            use_dit_pos_embed = False
         else:
             tokens = action_tokens
             action_start = 0
+            use_dit_pos_embed = True
 
         # DiT with cross-attn on vlm_kv (None → zero-stub for back-compat)
-        velocity_tokens = self.dit(tokens, timestep, position_ids, vlm_kv=vlm_kv)
+        if use_dit_pos_embed:
+            velocity_tokens = self.dit(tokens, timestep, position_ids, vlm_kv=vlm_kv)
+        else:
+            # Skip DiT's internal pos_embed by passing `add_pos_embed=False`.
+            # (The DiT.forward signature was extended to accept this flag.)
+            velocity_tokens = self.dit(
+                tokens, timestep, position_ids, vlm_kv=vlm_kv,
+                add_pos_embed=False,
+            )
 
         # Slice off state prefix (if present) before decode
         if action_start > 0:
