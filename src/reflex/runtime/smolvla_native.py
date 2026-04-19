@@ -285,8 +285,11 @@ class SmolVLANativeServer:
                 .div_(255.0)
                 .unsqueeze(0)
             )
-            # 180° H+W flip for LIBERO camera orientation. Skip in legacy mode.
-            if not legacy_mode:
+            # 180° H+W flip for LIBERO camera orientation. Skip in legacy mode
+            # OR when REFLEX_LIBERO_NO_FLIP=1 (A/B test for whether vla-eval
+            # already applied the flip upstream — if it did, we double-flip).
+            no_flip = os.environ.get("REFLEX_LIBERO_NO_FLIP", "0") == "1"
+            if not legacy_mode and not no_flip:
                 t = torch.flip(t, dims=[2, 3])
             batch[key] = t
 

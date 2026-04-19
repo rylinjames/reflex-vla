@@ -219,6 +219,11 @@ def run_libero10():
         # ONNX export (which hits per-step 2% velocity drift) and runs lerobot
         # SmolVLAPolicy directly. ONNX export still shipped for Jetson/TRT.
         "REFLEX_NATIVE": "1",
+        # A/B: disable our 180° H+W image flip. Hypothesis: vla-eval's
+        # LIBERO integration may already apply the flip, in which case we
+        # were double-flipping. Unset / "0" = apply flip (default);
+        # "1" = skip flip. Run 10 tests this.
+        "REFLEX_LIBERO_NO_FLIP": "1",
     }
     # Route server stdout to a file so we can print it on error.
     server_log_path = "/tmp/adapter_server.log"
