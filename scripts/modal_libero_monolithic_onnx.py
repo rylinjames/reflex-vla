@@ -302,7 +302,14 @@ def run_libero_onnx(
         observation.language.tokens / attention_mask.
         """
         from lerobot.utils.constants import OBS_LANGUAGE_TOKENS, OBS_LANGUAGE_ATTENTION_MASK
-        images, img_masks = policy.prepare_images(batch_pp)  # 3 each after SmolVLA padding
+        images, img_masks = policy.prepare_images(batch_pp)
+        # SmolVLA wrapper was exported expecting exactly 3 cameras. LIBERO
+        # only has 2 (agentview + wrist); pad the 3rd slot with a zero
+        # image + empty mask, matching SmolVLA's own empty-camera code path
+        # (prepare_images uses `torch.ones_like(img) * -1` for missing cams).
+        while len(images) < 3:
+            images.append(torch.ones_like(images[0]) * -1.0)
+            img_masks.append(torch.zeros_like(img_masks[0]))
         state = policy.prepare_state(batch_pp)
         lang_tokens = batch_pp[OBS_LANGUAGE_TOKENS]
         lang_masks = batch_pp[OBS_LANGUAGE_ATTENTION_MASK]
