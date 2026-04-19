@@ -80,31 +80,43 @@ Runtime chains them: Eagle runs once per observation (images + prompt), DiT runs
 
 ## 5-step implementation plan (1–2 days)
 
-### Step 1 — vendor Eagle source (~30 min)
-Copy `lerobot/src/lerobot/policies/groot/eagle2_hg_model/*` into `src/reflex/exporters/eagle_vendor/`. Strip `peft`/`LoraConfig` imports (not needed for export). Force `_attn_implementation="eager"` in config at load time.
+### ✅ Step 1 — vendor Eagle source (DONE 2026-04-19)
+Copied `lerobot/policies/groot/eagle2_hg_model/*` (4 files, 1575 lines) into `src/reflex/exporters/eagle_vendor/`. Modifications:
+- `peft` + `LoraConfig` imports made optional (training-only, not needed for export)
+- `_attn_implementation` default flipped `flash_attention_2` → `eager` in both config and modeling (FA2 ops not consumable by ONNX/TRT)
+- Training code can still explicitly pass FA2 on capable hardware
 
-### Step 2 — build `EagleExportStack(nn.Module)` (~4 hours)
-Mirrors `EagleBackbone.forward_eagle`. Signature:
+**Step 1c diagnostic (key dump) unblocked Step 2** by revealing:
+- `eagle_linear` ABSENT — skip the 2048→1536 projection
+- State dict prefix is `backbone.model.*` (not `backbone.eagle_model.*`)
+- **NEW FINDING: `action_head.state_encoder` EXISTS** (32-embodiment, 128→1024→1536, 54.6M params) — was missing from prior reflex exports
+- **`future_tokens` ABSENT** in N1.6 — DiT sequence is simpler: `sa_embs = cat(state, actions)` (no learnable prefix)
+- DiT substructure: timestep_encoder, 32 transformer_blocks, proj_out_1 (final AdaLN), proj_out_2 (velocity)
+- All documented in `reflex_context/01_architecture/gr00t_n16_state_dict_analysis.md`
 
-```python
-class EagleExportStack(nn.Module):
-    def forward(self, pixel_values, input_ids, attention_mask, image_flags):
-        # SigLIP encode → [B, N_patches, 1152]
-        # mlp1 → [B, N_patches, 2048]
-        # Qwen2 decoder (single-pass, output_hidden_states=True) → [B, T, 2048]
-        return hidden_states[self.select_layer], attention_mask
-```
+### ✅ Step 2 — port state_encoder + extend GR00TFullStack (DONE 2026-04-19)
+Code changes in `src/reflex/exporters/gr00t_exporter.py` (commit `16d6d9c`):
+- NEW `GR00TStateEncoder(nn.Module)`: 2-linear (128→1024→1536), per-embodiment slicing (32-emb), matches the existing action_encoder/decoder pattern
+- `GR00T_META_KEYS` extended with `state_enc_{1,2}_{W,b}` mappings to `action_head.state_encoder.*`
+- `GR00TFullStack` forward signature extended: `(noisy_actions, timestep, position_ids, state, vlm_kv)`. Builds `sa_embs = cat(state_token, action_tokens)` when state provided; slices state prefix off before action_decoder
+- `build_gr00t_full_stack` soft-loads state_encoder (back-compat: older checkpoints without state_enc keys fall back to action-only sequence)
+- DiT (`GR00TExpertStack`) already accepted `vlm_kv: Optional[Tensor]` — zero-stub path preserved as default
 
-Load weights from state_dict with `backbone.eagle_model.*` prefix. Apply the 3-patch stack + eager-attn at build time.
+**Pending Step 2 validation:** `scripts/modal_gr00t_state_encoder_sanity.py` — quick 3-test run that confirms (1) state_encoder loads from N1.6 state_dict, (2) forward accepts new signature, (3) changing state or vlm_kv produces different output (conditioning is LIVE, not dead code).
 
-### Step 3 — local parity test (~2 hours)
-`scripts/local_eagle_parity.py`: one image + "pick up the apple" → compare `EagleExportStack` features vs `GR00TN15.from_pretrained().backbone.forward_eagle()`. Target `cos=+1.000000, max_abs<1e-4`. Same seeded-noise discipline as pi0 parity tests.
+### 🟡 Step 3 — local parity vs lerobot reference (~2 hours)
+`scripts/modal_gr00t_parity.py`:
+1. Load `nvidia/GR00T-N1.6-3B` via both lerobot's `GR00TN15.from_pretrained` AND our `build_gr00t_full_stack`
+2. Run lerobot's full pipeline with (image + task + state + seeded noise) → actions_ref
+3. Extract vl_embs from lerobot's backbone forward
+4. Run our `GR00TFullStack(noisy, t, pos, state=state, vlm_kv=vl_embs)` → actions_ours
+5. Compare: cos + max_abs. Target `cos=+1.000000, max_abs<1e-4` like our bit-exact pi0.5 parity
 
 ### Step 4 — Modal export (~3 hours)
 Extend `scripts/modal_gr00t_monolithic_export.py` with `export_gr00t_vlm_modal()`:
-1. Build `EagleExportStack`, export via `torch.onnx.export(opset=19)` → `eagle_vlm.onnx`
-2. Build `GR00TFullStack` with `vlm_kv` input plumbed, export → `expert_stack_with_vlm.onnx`
-3. Parity test chains the two ONNXes and compares against raw PyTorch
+1. Build Eagle-equivalent encoder (using vendored Eagle source), export → `eagle_vlm.onnx`
+2. Build `GR00TFullStack` with `state + vlm_kv` plumbed, export → `expert_stack_with_vlm.onnx`
+3. Parity test chains the two ONNXes end-to-end
 
 ### Step 5 — end-to-end test (~2 hours)
 Real image + "pick up the red cup" through the chain → actions. Flip the image; actions change (currently with zero-KV they don't). Then update `measured_numbers.md` + launch drafts with "GR00T now has real VLM conditioning, cos=+1.000000 verified."
