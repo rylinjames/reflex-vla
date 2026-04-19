@@ -230,14 +230,19 @@ def build_eagle_export_stack(
         "image_size": int(image_size),
         "patch_size": 14,
     }
+    # N1.6 uses Qwen3-style layers (q_norm + k_norm inside self-attn,
+    # no bias on q/k/v projections). Confirmed by smoke run: loading with
+    # Qwen2 config produced 48 missing keys (q/k/v.bias for each layer)
+    # and 32 unexpected keys (k_norm/q_norm each layer). Switch to Qwen3.
     text_config_dict = {
-        "architectures": ["Qwen2ForCausalLM"],
+        "architectures": ["Qwen3ForCausalLM"],
         "vocab_size": int(vocab_size),
         "hidden_size": int(llm_hidden),
         "intermediate_size": int(llm_intermediate),
         "num_hidden_layers": int(llm_num_layers),
         "num_attention_heads": int(num_attention_heads),
         "num_key_value_heads": int(num_key_value_heads),
+        "head_dim": int(head_dim),
         "hidden_act": "silu",
         "max_position_embeddings": 32768,
         "tie_word_embeddings": False,
