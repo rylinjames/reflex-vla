@@ -137,10 +137,14 @@ class ActionGuard:
             mode: "clamp" (adjust to nearest safe value) or "reject" (return zeros)
             log_dir: Directory for EU AI Act compliance logs (None = no logging)
             model_version: Model identifier for audit trail
-            max_consecutive_clamps: After N consecutive chunks that required
-                clamping or contained NaN/Inf, the guard "trips" — `tripped`
-                becomes True and callers (e.g. `reflex serve`) should stop
-                serving actions until `reset()` is called. Set to 0 to disable.
+            max_consecutive_clamps: staleness kill-switch. After N consecutive
+                chunks that required clamping or contained NaN/Inf, the guard
+                "trips" — `tripped` becomes True and callers (e.g. `reflex
+                serve`) should stop serving actions until `reset()` is called.
+                Set to 0 to disable. This protects against stale or runaway
+                policies that keep emitting invalid actions — e.g. a model
+                that's producing NaN due to numerical divergence, or a
+                degenerate output mode where every chunk hits clamp limits.
         """
         self.limits = limits
         self.mode = mode
@@ -208,10 +212,10 @@ class ActionGuard:
         Returns:
             (safe_actions, results) where safe_actions is the clamped/rejected array
 
-        Non-finite handling: any NaN or Inf in the input array is a hard reject
-        — the whole chunk is replaced with zeros and a single violation record
-        is appended (not per-joint). This counts as a "clamp event" for the
-        consecutive-clamp kill-switch.
+        Non-finite handling: any NaN or Inf (i.e. any nan/inf value) in the
+        input array is a hard reject — the whole chunk is replaced with zeros
+        and a single violation record is appended (not per-joint). This counts
+        as a "clamp event" for the staleness kill-switch.
         """
         results = []
         non_finite_mask = ~np.isfinite(actions)
@@ -247,7 +251,7 @@ class ActionGuard:
         if self._log_dir:
             self._log_inference(actions, safe_actions, all_violations, chunk_clamped)
 
-        # Consecutive-clamp kill-switch
+        # Staleness kill-switch — trip after N consecutive clamp/NaN chunks.
         if self.max_consecutive_clamps > 0:
             if chunk_clamped:
                 self._consecutive_clamps += 1
