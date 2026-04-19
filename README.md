@@ -14,8 +14,9 @@ Cross-framework ONNX export, edge-first serving, composable runtime wedges (safe
 
 ```bash
 # 1. Install (v0.1 — install from GitHub until we publish to PyPI)
-pip install 'reflex-vla[serve,gpu] @ git+https://github.com/rylinjames/reflex-vla'
-# Or CPU-only: pip install 'reflex-vla[serve,onnx] @ git+https://github.com/rylinjames/reflex-vla'
+# `[monolithic]` is required for the cos=+1.000000 verified export path (it pins transformers==5.3.0).
+pip install 'reflex-vla[serve,gpu,monolithic] @ git+https://github.com/rylinjames/reflex-vla'
+# Or CPU-only: pip install 'reflex-vla[serve,onnx,monolithic] @ git+https://github.com/rylinjames/reflex-vla'
 # Note: GPU install requires the FULL cuDNN 9 system library (incl. libcudnn_adv.so.9),
 # not just the pip wheel. Easiest path is NVIDIA's container:
 #   docker run --gpus all -it nvcr.io/nvidia/tensorrt:24.10-py3

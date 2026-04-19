@@ -38,8 +38,8 @@ image = (
     # from the public git URL. If this fails, that's a real customer failure.
     .run_commands(
         # Customers don't get a pre-cloned repo; they install from the public URL.
-        # README says: pip install 'reflex-vla[serve,gpu] @ git+https://github.com/rylinjames/reflex-vla'
-        "pip install 'reflex-vla[serve,gpu] @ git+https://github.com/rylinjames/reflex-vla'",
+        # README (post-fix) says: pip install 'reflex-vla[serve,gpu,monolithic] @ git+...'
+        "pip install 'reflex-vla[serve,gpu,monolithic] @ git+https://github.com/rylinjames/reflex-vla'",
     )
 )
 

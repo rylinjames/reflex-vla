@@ -61,16 +61,19 @@ def export(
     dry_run: bool = typer.Option(False, help="Check exportability without building engines"),
     verbose: bool = typer.Option(False, help="Verbose logging"),
     monolithic: bool = typer.Option(
-        False,
-        "--monolithic",
-        help="Use the cos=1.0-verified monolithic ONNX export path (SmolVLA + pi0). "
-             "Requires `pip install 'reflex-vla[monolithic]'` — pins transformers==5.3.0. "
-             "Default OFF for v0.2 because the base install uses transformers<5.0.",
+        True,
+        "--monolithic/--decomposed",
+        help="Export path selector. Default: --monolithic (the cos=+1.000000 verified "
+             "path, one ONNX file). Opt into --decomposed only if you specifically need "
+             "the 5-stage export for debugging; --decomposed is the older path with "
+             "known correctness gaps. Monolithic requires `pip install "
+             "'reflex-vla[monolithic]'` (pins transformers==5.3.0).",
     ),
     num_steps: int = typer.Option(
         10,
         help="Denoise steps baked into the monolithic ONNX. "
-             "Canonical flow-matching = 10; use 1 for exact one-shot Euler. "
+             "Canonical flow-matching = 10 (SmolVLA, pi0, pi0.5); use 1 for exact "
+             "one-shot Euler. GR00T (DDPM) uses 4 as its runtime default. "
              "Only used when --monolithic is set.",
     ),
 ):
