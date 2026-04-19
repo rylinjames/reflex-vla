@@ -148,7 +148,9 @@ def chain_test(model_id: str = "nvidia/GR00T-N1.6-3B"):
     attention_mask = torch.ones(B, seq, dtype=torch.long, device="cuda")
     image_flags = torch.tensor([1], device="cuda", dtype=torch.long)
 
-    chunk = 16  # GR00T's action chunk horizon
+    # DiT ONNX was exported with chunk=50 FIXED (only batch is dynamic).
+    # Position_ids shape is [1, chunk + 1] = [1, 51] (state + 50 actions).
+    chunk = 50
     raw_action_dim = dit_stack.action_encoder.raw_action_dim
     raw_state_dim = dit_stack.state_encoder.raw_state_dim if dit_stack.state_encoder else 128
     noisy_actions = torch.randn(B, chunk, raw_action_dim, device="cuda", dtype=torch.float32)
