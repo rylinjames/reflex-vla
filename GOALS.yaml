@@ -200,3 +200,39 @@ goals:
     description: "Native export path (lerobot SmolVLAPolicy + DecomposedRMSNorm) matches PyTorch reference to cos=1.0000 end-to-end. The one load-bearing number for reflex's deployment-parity claim."
     check: "test -f src/reflex/runtime/smolvla_native.py && test -f scripts/local_full_diff.py && REFLEX_NATIVE=1 .venv/bin/python scripts/local_full_diff.py 2>&1 | grep -q 'cos=+1.000'"
     weight: 10
+
+  # ── MONETIZATION BLOCKERS (v0.2.1 → v0.3 ship list) ───────────────
+  # Added 2026-04-19 after gap analysis. Each of these is something a
+  # paid customer would demand before handing over $500-$2,000/mo.
+  # v0.2 ships the "tech is verified" story; v0.3 must ship the "tech
+  # actually works for your robot on your hardware" story.
+
+  - id: task-success-benchmark
+    description: "Publish task-success numbers for the monolithic ONNX path on at least ONE benchmark (LIBERO-10, SimplerEnv, or real-robot task). cos=1.0 parity verifies ONNX matches PyTorch mathematically — NOT that the robot completes the task. Without task-success numbers, a buyer reading cos=1.0 assumes deployment = working, which is an empirical gap. Blocks paid monetization: no customer pays $2k/mo for 'verified parity, task success unmeasured.' Prior LIBERO-10 runs on the decomposed path hit 0% (see 05_sessions/2026-04-17_libero_correctness_hunt.md); need to re-run on the cos=1.0 monolithic path."
+    check: "test -f reflex_context/06_experiments/task_success_results.md && grep -q 'LIBERO\\|SimplerEnv\\|success_rate' reflex_context/06_experiments/task_success_results.md 2>/dev/null"
+    weight: 10
+
+  - id: jetson-latency-published
+    description: "Publish real ms/step latency on Jetson Orin Nano + Orin + Thor for each supported VLA (SmolVLA, pi0, pi0.5, GR00T). Per-model × per-target matrix with p50/p95/p99. The entire product pitch is 'deploy to Jetson' — without these numbers a buyer can't size hardware, budget, or timing loop. Blocks on hardware access (CloudJetson Orin Nano waitlisted); unblock via Amazon-return dev kit, community bounty, or first customer's hardware. Related: `jetson-benchmark-ci` sets up the CI infrastructure; this goal ensures numbers actually get published."
+    check: "test -f reflex_context/06_experiments/jetson_latency_results.md && grep -q 'ms/step\\|p50\\|p95' reflex_context/06_experiments/jetson_latency_results.md 2>/dev/null"
+    weight: 10
+
+  - id: gr00t-vlm-conditioning
+    description: "Export Eagle-2-HG VLM backbone as a separate ONNX, chain its KV output into the GR00T DiT per denoise step. Currently the GR00T monolithic ONNX uses a ZERO VLM-KV placeholder — DiT + AdaLN stack is cos=1.0 machine precision, but without real VLM conditioning the exported artifact produces actions that are a pure function of noise. 'GR00T support' in the README is technically true but not deployable for actual multi-modal control. Blocks paid monetization on any customer who wants GR00T (NVIDIA-backed, heaviest marketing tailwind of the four VLAs)."
+    check: "test -f src/reflex/exporters/gr00t_vlm_exporter.py && .venv/bin/python -c 'from reflex.exporters.gr00t_vlm_exporter import export_gr00t_with_vlm' 2>/dev/null"
+    weight: 9
+
+  - id: orin-nano-fp16-fit
+    description: "pi0 (12.5 GB) and pi0.5 (13 GB) monolithic ONNX don't fit on Orin Nano 8GB at FP32. FP16 engine rebuild + Orin Nano fit validation so pi0/pi0.5 actually run on the entry-level Jetson. Without this, the 'pick up a $499 Orin Nano and deploy pi0' story in our pitch is literally false for the most common VLA model. SmolVLA (1.6GB) and GR00T (4.4GB) already fit; this is a pi-family-specific fit problem. Requires TRT FP16 engine build with validated parity loss < 1% vs FP32."
+    check: "test -f tests/test_orin_nano_fp16_fit.py && .venv/bin/python -m pytest tests/test_orin_nano_fp16_fit.py -q 2>/dev/null"
+    weight: 8
+
+  - id: docker-arm64-jetson
+    description: "Native arm64 Docker image (`ghcr.io/rylinjames/reflex-vla:<version>-arm64` or multi-arch manifest) that runs on Jetson hardware. Current published image is x86_64 only; Jetson users must build from source. The 'zero-install Docker run' quickstart in our README works on x86 GPUs (A10G, RTX) but is a dead-end for the primary customer target. Requires: QEMU emulation or native arm64 build in GitHub Actions + Jetson-specific CUDA/cuDNN pinning + smoke test on real Jetson hardware."
+    check: "test -f .github/workflows/docker-publish-arm64.yml && grep -q 'arm64\\|linux/arm64' .github/workflows/docker-publish-arm64.yml 2>/dev/null"
+    weight: 7
+
+  - id: fine-tuning-pipeline
+    description: "EXPLICIT SCOPE EXPANSION (2026-04-19): buyers often conflate 'deployment' with 'training' — they want an end-to-end workflow from their dataset to a deployed ONNX. Current reflex scope is deployment-only (PyTorch/JAX owns training per the product positioning). This goal adds a thin fine-tuning wrapper: `reflex finetune --base lerobot/smolvla_base --dataset <hf_id> --output ./my_export` that wraps lerobot's existing training loops + auto-exports the fine-tuned checkpoint. Lower weight than the other monetization blockers because it's a positioning question (is reflex 'the deploy tool' or 'the end-to-end tool?') — consider whether to build it before deciding to charge for it."
+    check: "test -f src/reflex/finetune.py && .venv/bin/python -c 'from reflex.finetune import run_finetune' 2>/dev/null"
+    weight: 5
