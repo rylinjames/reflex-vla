@@ -179,7 +179,38 @@ def run_lerobot_native_libero(
         print(f"[lerobot-native] LiberoEnv built for task {task_idx}")
         for ep in range(num_episodes):
             try:
-                obs, _ = env.reset()
+                obs, info = env.reset()
+                # Extensive first-step diagnostic so we can finally see the
+                # full LIBERO obs shape + where state lives.
+                if ep == 0 and task_idx == tasks_to_run[0]:
+                    print(f"[debug] reset info: {info}")
+                    print(f"[debug] top obs keys: {sorted(obs.keys()) if isinstance(obs, dict) else type(obs).__name__}")
+                    if isinstance(obs, dict) and "pixels" in obs:
+                        px = obs["pixels"]
+                        if isinstance(px, dict):
+                            print(f"[debug] obs['pixels'] keys: {sorted(px.keys())}")
+                            for k in list(px.keys())[:4]:
+                                v = px[k]
+                                if hasattr(v, "shape"):
+                                    print(f"  obs['pixels'][{k}]: shape={v.shape} dtype={v.dtype}")
+                                else:
+                                    print(f"  obs['pixels'][{k}]: type={type(v).__name__}")
+                        else:
+                            print(f"[debug] obs['pixels'] is not a dict: type={type(px).__name__}")
+                    # Check env for state source
+                    print(f"[debug] env attrs with 'state'/'robot' in name:")
+                    for attr in dir(env):
+                        if "state" in attr.lower() or "robot" in attr.lower() or "proprio" in attr.lower():
+                            print(f"  env.{attr}")
+                    # Try unwrapped
+                    try:
+                        u = env.unwrapped
+                        print(f"[debug] env.unwrapped type: {type(u).__name__}")
+                        if hasattr(u, "sim"):
+                            print(f"[debug] env.unwrapped has .sim: qpos shape = "
+                                  f"{u.sim.data.qpos.shape if hasattr(u.sim, 'data') else 'no-data'}")
+                    except Exception as _ue:
+                        print(f"[debug] env.unwrapped access failed: {_ue}")
                 policy.reset()
                 steps = 0
                 done = False
@@ -208,20 +239,25 @@ def run_lerobot_native_libero(
                         # 180° flip per LIBERO convention
                         return torch.flip(t, dims=[2, 3]).to("cuda")
 
-                    # Extract images — try common LIBERO obs key names
-                    img_keys_tried = []
+                    # Extract images. LiberoEnv emits obs['pixels'] as a dict
+                    # of cameras (gym PixelObservationWrapper convention).
+                    img_dict = (obs.get("pixels") if isinstance(obs, dict) else None) or {}
+                    if not isinstance(img_dict, dict):
+                        # fallback: obs might already be a flat camera dict
+                        img_dict = obs if isinstance(obs, dict) else {}
                     img1 = img2 = None
-                    if isinstance(obs, dict):
-                        for cand in ("agentview_image", "image", "pixels"):
-                            if cand in obs:
-                                img1 = obs[cand]; img_keys_tried.append(cand); break
-                        for cand in ("robot0_eye_in_hand_image", "image2",
-                                     "eye_in_hand_image", "wrist_image"):
-                            if cand in obs:
-                                img2 = obs[cand]; img_keys_tried.append(cand); break
+                    for cand in ("agentview_image", "image", "agent_view",
+                                 "frontview_image"):
+                        if cand in img_dict:
+                            img1 = img_dict[cand]; break
+                    for cand in ("robot0_eye_in_hand_image", "image2",
+                                 "eye_in_hand_image", "wrist_image"):
+                        if cand in img_dict:
+                            img2 = img_dict[cand]; break
                     if img1 is None or img2 is None:
-                        print(f"[warn] missing image keys (tried: {img_keys_tried}); "
-                              f"obs keys: {list(obs.keys()) if isinstance(obs, dict) else 'not-a-dict'}")
+                        if steps == 0:
+                            print(f"[warn] missing image keys; img_dict keys: "
+                                  f"{sorted(img_dict.keys()) if isinstance(img_dict, dict) else 'not-dict'}")
                     # Extract state
                     state_keys = ["robot0_eef_pos", "state", "agent_state"]
                     state_val = None
