@@ -562,3 +562,78 @@ The `@{_HEAD}` on the pip URL ALSO pins pip to install that exact commit (not la
 
 **Discovered:** customer dogfood v5 2026-04-19. Cost: one wasted ~12 min Modal run + a false-positive "fixes don't work" signal that almost triggered a second round of unnecessary debugging.
 
+---
+
+## Gotcha (2026-04-19): `pip install <pkg>` does not guarantee `import <pkg>` works
+
+**Symptom.** LIBERO run 5: `pip list` shows `libero==0.1.0` installed, `/opt/LIBERO/libero/` source tree exists, BUT `import libero` fails with `ModuleNotFoundError: No module named 'libero'`. Reinstalling from source (`pip install /opt/LIBERO --no-deps`) succeeds cleanly (exit 0) — import STILL fails right after.
+
+**Root cause.** LIBERO's `setup.py` is non-standard: `install_requires=[]` and an unusual package-discovery layout. pip writes `libero-0.1.0.dist-info` metadata and thinks the install succeeded, but the actual `libero/` package directory isn't placed on Python's module search path. Python can only import via the source tree at `/opt/LIBERO/libero/`.
+
+**Fix.** Add the source root to `PYTHONPATH` at the image level:
+```python
+image = (...)
+    .env({
+        # libero installs to metadata only; source lives at /opt/LIBERO/libero/
+        # — must be on PYTHONPATH for `from libero.libero import ...` to work.
+        "PYTHONPATH": "/opt/LIBERO",
+    })
+```
+
+PYTHONPATH applies to every subprocess (main function, vla-eval workers, smoke tests), so the import works everywhere.
+
+**Lesson.** When a pip-installed package fails `import` despite "installation succeeded", check if the package uses a non-standard layout. A `pip show <pkg>` that lists a `Location` of `/usr/local/lib/python*/site-packages` but that directory has only `<pkg>-*.dist-info` and no `<pkg>/` subdirectory is the signature. Fix by adding the source root to PYTHONPATH.
+
+---
+
+## Gotcha (2026-04-19): `python` in subprocess != `sys.executable` in containers
+
+**Symptom.** LIBERO runs 3–4: the main Modal function had `libero` importable (adapter server ran fine), but a subprocess spawned with `subprocess.run(["python", "-c", "import libero"])` raised `ModuleNotFoundError`. The `python` binary resolved to a DIFFERENT interpreter than the one running the main function.
+
+**Root cause.** Modal containers often have multiple python interpreters on PATH (e.g. `/usr/bin/python` = system Python 3.x; `/usr/local/bin/python` = Modal-injected Python 3.11; virtualenv-local `python`). A bare `"python"` in `subprocess.run([...])` resolves via shell PATH, which may pick a different interpreter from the one your function is executing in. Packages installed in the "right" python's site-packages are invisible to the wrong python.
+
+**Fix.** Always use `sys.executable` for subprocess python calls:
+```python
+import sys, subprocess
+result = subprocess.run(
+    [sys.executable, "-c", "import libero; print(libero.__file__)"],
+    ...
+)
+```
+
+This guarantees the subprocess uses the exact same interpreter as the caller.
+
+**Also affects:** `pip` invocations from subprocess should be `[sys.executable, "-m", "pip", "install", ...]` not `["pip", "install", ...]` for the same reason.
+
+**Lesson.** Never trust a bare `"python"` or `"pip"` in subprocess calls inside Modal containers. Use `sys.executable` + `-m <module>` form. Silent interpreter divergence is one of the most confusing classes of "I just installed it, why is it not importable" bug.
+
+---
+
+## Gotcha (2026-04-19): Python version vs package extras — lerobot 0.5.1 needs 3.12, LIBERO stack wants 3.11
+
+**Symptom.** LIBERO image on `debian_slim(python_version="3.11")` — because LIBERO + robosuite 1.4.1 + MuJoCo stack is proven on 3.11. After flipping `reflex export` default to monolithic (2026-04-19), ran `pip install -e '.[monolithic]'` in the image. pip errored:
+```
+ERROR: Ignored the following versions that require a different python version:
+  0.5.0 Requires-Python >=3.12;
+  0.5.1 Requires-Python >=3.12
+ERROR: Could not find a version that satisfies the requirement
+  lerobot==0.5.1; extra == "monolithic"
+```
+
+**Root cause.** The `[monolithic]` extra pins `lerobot==0.5.1` exactly (required by `scripts/modal_*_monolithic_export.py` family). lerobot 0.5.x requires Python >=3.12. The LIBERO image is on 3.11. Can't satisfy both.
+
+**Fix (for this case).** The LIBERO eval uses `REFLEX_NATIVE=1` which routes to `SmolVLANativeServer` — the PyTorch path, not the monolithic ONNX path. The export step still runs (to produce the config + normalizer safetensors that vla_eval reads), but it doesn't NEED the monolithic ONNX files. Pass `--decomposed` to `reflex export`:
+```python
+subprocess.run([
+    "reflex", "export", "lerobot/smolvla_libero",
+    "--target", "desktop", "--output", export_dir,
+    "--decomposed",  # no [monolithic] extras needed, fine for REFLEX_NATIVE=1
+], ...)
+```
+
+This sidesteps the `[monolithic]` install entirely.
+
+**Larger lesson.** When Reflex's CLI defaults change (e.g. `--monolithic` becoming the default), Modal images that were stable suddenly break because their install command now pulls a newer-Python-requirement dep. Audit rule: if your image uses `python_version<current` and installs reflex-vla, either (a) match reflex-vla's supported Python range, or (b) pass the CLI flag that avoids the new-requiring extras.
+
+**Cross-reference.** `scripts/modal_libero_monolithic.py` uses `--decomposed` + a comment explaining why.
+
