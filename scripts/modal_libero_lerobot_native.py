@@ -151,6 +151,24 @@ def run_lerobot_native_libero(
         pass
     print(f"[lerobot-native] Policy loaded in {time.time()-t0:.1f}s")
 
+    # Load the policy's preprocessor pipeline — this is what tokenizes task
+    # text, normalizes state, and shapes images. select_action expects a
+    # preprocessed batch.
+    from lerobot.processor.pipeline import PolicyProcessorPipeline
+    from lerobot.processor.converters import (
+        batch_to_transition, transition_to_batch,
+    )
+    from huggingface_hub import snapshot_download
+    repo_dir = snapshot_download(model_id)
+    preprocessor = PolicyProcessorPipeline.from_pretrained(
+        pretrained_model_name_or_path=repo_dir,
+        config_filename="policy_preprocessor.json",
+        to_transition=batch_to_transition,
+        to_output=transition_to_batch,
+        overrides={"device_processor": {"device": "cuda"}},
+    )
+    print(f"[lerobot-native] Preprocessor pipeline loaded")
+
     # Load lerobot's env + processor
     print(f"[lerobot-native] Importing lerobot env + processors...")
     from lerobot.envs.libero import LiberoEnv
@@ -202,13 +220,25 @@ def run_lerobot_native_libero(
                     for attr in dir(env):
                         if "state" in attr.lower() or "robot" in attr.lower() or "proprio" in attr.lower():
                             print(f"  env.{attr}")
-                    # Try unwrapped
+                    # Try unwrapped — dig for state source
                     try:
                         u = env.unwrapped
                         print(f"[debug] env.unwrapped type: {type(u).__name__}")
-                        if hasattr(u, "sim"):
-                            print(f"[debug] env.unwrapped has .sim: qpos shape = "
-                                  f"{u.sim.data.qpos.shape if hasattr(u.sim, 'data') else 'no-data'}")
+                        for attr in ("_env", "env", "sim", "robots", "get_proprio",
+                                     "get_observation", "get_state"):
+                            if hasattr(u, attr):
+                                val = getattr(u, attr)
+                                print(f"  env.unwrapped.{attr} present: "
+                                      f"{type(val).__name__}")
+                        # Try get_observation method
+                        if hasattr(u, "get_observation"):
+                            try:
+                                raw = u.get_observation()
+                                if isinstance(raw, dict):
+                                    print(f"  env.unwrapped.get_observation() keys: "
+                                          f"{sorted(raw.keys())}")
+                            except Exception as _e:
+                                print(f"  get_observation failed: {_e}")
                     except Exception as _ue:
                         print(f"[debug] env.unwrapped access failed: {_ue}")
                 policy.reset()
@@ -287,9 +317,19 @@ def run_lerobot_native_libero(
                         "observation.state": state_t,
                         "task": [task_text],
                     }
+                    # Route through policy preprocessor (tokenizes task text,
+                    # normalizes state). select_action expects a preprocessed
+                    # batch.
+                    batch_pp = preprocessor(batch)
+                    batch_pp = {
+                        k: (v.to("cuda") if isinstance(v, torch.Tensor) else v)
+                        for k, v in batch_pp.items()
+                    }
+                    if steps == 0 and ep == 0 and task_idx == tasks_to_run[0]:
+                        print(f"[debug] batch_pp keys: {sorted(batch_pp.keys())}")
                     # select_action re-queries every step when n_action_steps=1
                     with torch.no_grad():
-                        action = policy.select_action(batch)
+                        action = policy.select_action(batch_pp)
                     # Convert to numpy for env.step
                     if isinstance(action, torch.Tensor):
                         action = action.cpu().numpy()
