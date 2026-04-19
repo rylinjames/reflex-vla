@@ -253,10 +253,23 @@ def build_eagle_export_stack(
     model = Eagle25VLForConditionalGeneration(cfg)
 
     # Load weights from state_dict — prefix is `backbone.model.*` so strip it.
+    # Also reshape patch_embedding from flat (1152, 588) to conv-style
+    # (1152, 3, 14, 14). N1.6 stores it flattened (why?); standard SigLIP
+    # uses Conv2d weights. 588 = 3 channels × 14 × 14 patch.
     remapped = {}
+    patch_key = "vision_model.vision_model.embeddings.patch_embedding.weight"
     for k, v in state_dict.items():
         if k.startswith("backbone.model."):
-            remapped[k[len("backbone.model."):]] = v.float()
+            sub = k[len("backbone.model."):]
+            v = v.float()
+            if sub == patch_key and v.ndim == 2:
+                # Reshape (hidden, C*H*W) → (hidden, C, H, W)
+                hidden, flat = v.shape
+                # Assume C=3, square patch
+                patch = int((flat // 3) ** 0.5)
+                v = v.reshape(hidden, 3, patch, patch).contiguous()
+                logger.info("[eagle-export] reshaped patch_embedding to %s", tuple(v.shape))
+            remapped[sub] = v
 
     missing, unexpected = model.load_state_dict(remapped, strict=False)
     if missing:
